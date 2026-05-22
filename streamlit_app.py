@@ -60,7 +60,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # --- TAB 1: RECORD PURCHASE ---
 with tab1:
     st.header("Enter New Purchase")
-    selected_item = st.selectbox("Search Item", options=products_df['Item_Name'].unique(), index=None)
+    selected_item = st.selectbox("Search Item", options=products_df['Item_Name'].unique(), index=None, key="record_select")
     if selected_item:
         item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
         with st.form("purchase_form", clear_on_submit=True):
@@ -86,7 +86,7 @@ with tab2:
     st.header("Stock & Ledger")
     inv = purchases_df.groupby(['Item_Name', 'Stock Unit'])['Stock Qty Added'].sum().reset_index()
     st.dataframe(inv, use_container_width=True)
-    ledger_item = st.selectbox("View Ledger", options=products_df['Item_Name'].unique(), index=None)
+    ledger_item = st.selectbox("View Ledger", options=products_df['Item_Name'].unique(), index=None, key="ledger_select")
     if ledger_item:
         ledger = purchases_df[purchases_df['Item_Name'] == ledger_item].sort_values('Date')
         ledger['Running Balance'] = ledger['Stock Qty Added'].cumsum()
@@ -98,26 +98,21 @@ with tab3:
     if not learned_df.empty:
         st.dataframe(learned_df, use_container_width=True)
         if st.button("🧹 Optimize AI Memory"):
-            clean_df = learned_df.copy()
-            clean_df['Billed_Description'] = clean_df['Billed_Description'].astype(str).str.strip().str.upper()
-            clean_df = clean_df.drop_duplicates(subset=["Billed_Description"], keep="last")
+            clean_df = learned_df.drop_duplicates(subset=["Billed_Description"], keep="last")
             conn.update(worksheet="Learned_Mappings", data=clean_df)
             st.rerun()
 
 # --- TAB 4: BULK UPLOAD SALES ---
 with tab4:
-    uploaded_file = st.file_uploader("Upload Sales File", type=['csv', 'xlsx'])
+    uploaded_file = st.file_uploader("Upload Sales File", type=['csv', 'xlsx'], key="file_upload")
     if uploaded_file and st.session_state.get("committed_file_name") != uploaded_file.name:
         if "processed_file_name" not in st.session_state or st.session_state.processed_file_name != uploaded_file.name:
             try:
                 df_upload = pd.read_csv(uploaded_file, header=None) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, header=None)
-                
-                # Check Duplicates
                 df_upload[1] = df_upload[1].astype(str).str.strip()
                 uploaded_bills_count = df_upload.groupby(1).size().to_dict()
                 db_bills_count = purchases_df['Bill Number'].astype(str).str.strip().value_counts().to_dict() if not purchases_df.empty else {}
                 duplicate_bills = [b for b, c in uploaded_bills_count.items() if b in db_bills_count and db_bills_count[b] == c]
-                
                 st.session_state.raw_upload_data = df_upload
                 st.session_state.processed_file_name = uploaded_file.name
                 if duplicate_bills:
@@ -131,7 +126,7 @@ with tab4:
 
         if st.session_state.get("resolving_duplicates"):
             with st.form("dup_form"):
-                resolutions = {b: st.radio(f"Bill {b}", ["Skip", "Override", "Add"], key=b) for b in st.session_state.duplicate_bills}
+                resolutions = {b: st.radio(f"Bill {b}", ["Skip", "Override", "Add"], key=f"dup_{b}") for b in st.session_state.duplicate_bills}
                 if st.form_submit_button("Confirm"):
                     st.session_state.bills_to_delete = [b for b, act in resolutions.items() if act == "Override"]
                     st.session_state.df_to_process = st.session_state.raw_upload_data.copy()
@@ -163,22 +158,22 @@ with tab4:
                 st.cache_data.clear()
                 st.session_state.committed_file_name = st.session_state.processed_file_name
                 st.rerun()
-            
-            if st.button("Commit Sales"): commit_sales()
+            if st.button("Commit Sales", key="commit_btn"): commit_sales()
 
 # --- TAB 5/6: EDIT BILLS ---
-def bill_editor(is_purchase):
+def bill_editor(is_purchase, suffix):
     df_filtered = purchases_df[purchases_df['Purchase Qty'] > 0] if is_purchase else purchases_df[purchases_df['Stock Qty Added'] < 0]
-    bill = st.selectbox(f"Select Bill", options=sorted(df_filtered['Bill Number'].dropna().unique().astype(str)), index=None)
+    bill_list = sorted(df_filtered['Bill Number'].dropna().unique().astype(str))
+    bill = st.selectbox(f"Select Bill ({suffix})", options=bill_list, index=None, key=f"sel_{suffix}")
     if bill:
         bill_data = purchases_df[purchases_df['Bill Number'].astype(str) == bill]
-        edited = st.data_editor(bill_data)
-        if st.button("Save Changes"):
+        edited = st.data_editor(bill_data, key=f"edit_{suffix}")
+        if st.button("Save Changes", key=f"save_{suffix}"):
             final = pd.concat([purchases_df[~purchases_df['Bill Number'].astype(str).isin([bill])], edited])
             final['Date'] = pd.to_datetime(final['Date']).dt.strftime('%d/%m/%Y')
             conn.update(worksheet="Purchases", data=final)
             st.success("Saved!")
             st.rerun()
 
-with tab5: bill_editor(True)
-with tab6: bill_editor(False)
+with tab5: bill_editor(True, "pur")
+with tab6: bill_editor(False, "sal")
