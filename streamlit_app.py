@@ -20,32 +20,55 @@ def get_purchases():
 @st.cache_data(ttl=10)
 def get_code_mapping():
     try:
-        # Reads the new mapping tab we added
         return conn.read(worksheet="Code_Mapping")
     except:
         return pd.DataFrame(columns=["Item Code", "Item Name"])
 
+@st.cache_data(ttl=10)
+def get_learned_mappings():
+    try:
+        # Reads the new AI Memory Bank
+        return conn.read(worksheet="Learned_Mappings")
+    except:
+        return pd.DataFrame(columns=["Billed_Description", "Matched_Item_Name"])
+
 products_df = get_product_master()
 purchases_df = get_purchases()
 mapping_df = get_code_mapping()
+learned_df = get_learned_mappings()
 
-# Create the translation dictionary (PI00001 -> MS PIPE)
+# 1. Create the Product Code translation dictionary
 code_dict = {}
 if not mapping_df.empty and 'Item Code' in mapping_df.columns and 'Item Name' in mapping_df.columns:
     code_dict = dict(zip(mapping_df['Item Code'].astype(str).str.strip(), mapping_df['Item Name'].astype(str).str.strip()))
+
+# 2. Create the AI Memory dictionary
+memory_dict = {}
+if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matched_Item_Name' in learned_df.columns:
+    memory_dict = dict(zip(learned_df['Billed_Description'].astype(str).str.strip(), learned_df['Matched_Item_Name'].astype(str).str.strip()))
 
 # Pre-process stock items for fuzzy matching
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
 def find_best_match(description):
-    desc = str(description).lower()
+    desc = str(description).strip()
+    
+    # --- NEW: Step 1. Check AI Memory Bank First ---
+    if desc in memory_dict:
+        return memory_dict[desc]
+    
+    # Step 2. Direct Substring Match
+    desc_lower = desc.lower()
     for key, val in stock_items_lower.items():
-        if desc in key or key in desc:
+        if desc_lower in key or key in desc_lower:
             return val
-    matches = get_close_matches(desc, stock_items_lower.keys(), n=1, cutoff=0.5)
+            
+    # Step 3. Fuzzy Match Algorithm
+    matches = get_close_matches(desc_lower, stock_items_lower.keys(), n=1, cutoff=0.5)
     if matches:
         return stock_items_lower[matches[0]]
+        
     return None
 
 st.title("📦 Hardware Inventory Management")
@@ -65,7 +88,6 @@ with tab1:
         
         with st.form("purchase_form", clear_on_submit=True):
             st.subheader(f"Selected: {selected_item}")
-            
             bill_number = st.text_input("Bill / Invoice Number", placeholder="Enter Bill Number...")
             
             c1, c2 = st.columns(2)
@@ -136,19 +158,16 @@ with tab4:
                     bill_val = row[1] 
                     qty_val = float(row[2])
                     
-                    # --- NEW LOGIC: Map Code to Name before combining ---
                     raw_item_code = str(row[4]).strip() if pd.notna(row[4]) else ""
                     other_desc = str(row[5]).strip() if pd.notna(row[5]) else ""
-                    
-                    # Translate the code (e.g. PI000002 -> MS PIPE)
                     mapped_name = code_dict.get(raw_item_code, raw_item_code)
                     
-                    # Merge the translated name with the typed description
                     if mapped_name and mapped_name.lower() != 'nan':
                         merged_description = f"{mapped_name} - {other_desc}"
                     else:
                         merged_description = other_desc
                     
+                    # Fuzzy match now inherently uses the Memory Bank first!
                     matched_item = find_best_match(merged_description)
                     
                     if matched_item:
@@ -205,7 +224,7 @@ with tab4:
                     for idx, un_row in enumerate(unmatched):
                         c1, c2, c3, c4 = st.columns([1, 2, 1, 3])
                         with c1: st.write(un_row['Bill Number'])
-                        with c2: st.write(un_row['Description']) # Shows the newly translated combo!
+                        with c2: st.write(un_row['Description'])
                         with c3: st.write(un_row['Qty'])
                         with c4:
                             selected = st.selectbox("Match", options=["-- Skip / Do Not Import --"] + stock_items, key=f"un_{idx}", label_visibility="collapsed")
@@ -213,9 +232,13 @@ with tab4:
                         
                     st.write("")
                     if st.form_submit_button("Confirm Manual Matches & Commit ALL Sales", type="primary"):
+                        new_learned_rules = [] # --- NEW: List to hold what we just learned ---
+                        
                         for un_row, selected_item in manual_selections:
                             if selected_item != "-- Skip / Do Not Import --":
                                 item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
+                                
+                                # 1. Prepare the inventory deduction record
                                 final_records_to_commit.append({
                                     "Date": un_row['Date'], 
                                     "Bill Number": un_row['Bill Number'], 
@@ -227,15 +250,32 @@ with tab4:
                                     "Stock Unit": item_details['Sales_Unit'], 
                                     "Display_Desc": un_row['Description']
                                 })
+                                
+                                # 2. Document the new rule for the Memory Bank
+                                new_learned_rules.append({
+                                    "Billed_Description": un_row['Description'],
+                                    "Matched_Item_Name": selected_item
+                                })
                         
+                        # Execute the updates
                         if final_records_to_commit:
+                            # A. Save the Sales to Purchases tab
                             clean_records = [{k: v for k, v in r.items() if k != 'Display_Desc'} for r in final_records_to_commit]
                             new_records_df = pd.DataFrame(clean_records)
                             updated_purchases = pd.concat([purchases_df, new_records_df], ignore_index=True)
                             conn.update(worksheet="Purchases", data=updated_purchases)
+                            
+                            # B. Save the new knowledge to Learned_Mappings tab
+                            if new_learned_rules:
+                                new_rules_df = pd.DataFrame(new_learned_rules)
+                                # Combine old rules with new rules, dropping duplicates so we only keep the newest manual override!
+                                updated_learnings = pd.concat([learned_df, new_rules_df], ignore_index=True).drop_duplicates(subset=["Billed_Description"], keep="last")
+                                conn.update(worksheet="Learned_Mappings", data=updated_learnings)
+                            
+                            # Reset app cache
                             st.cache_data.clear()
                             for key in ['auto_matched', 'unmatched', 'processed_file_name']: del st.session_state[key]
-                            st.success("🎉 Database updated successfully!")
+                            st.success("🎉 Database updated & AI Memory expanded successfully!")
                             st.rerun()
             else:
                 if st.button("Commit Sales to Database", type="primary"):
