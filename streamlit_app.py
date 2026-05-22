@@ -27,7 +27,6 @@ def get_code_mapping():
 @st.cache_data(ttl=10)
 def get_learned_mappings():
     try:
-        # Reads the new AI Memory Bank
         return conn.read(worksheet="Learned_Mappings")
     except:
         return pd.DataFrame(columns=["Billed_Description", "Matched_Item_Name"])
@@ -42,24 +41,25 @@ code_dict = {}
 if not mapping_df.empty and 'Item Code' in mapping_df.columns and 'Item Name' in mapping_df.columns:
     code_dict = dict(zip(mapping_df['Item Code'].astype(str).str.strip(), mapping_df['Item Name'].astype(str).str.strip()))
 
-# 2. Create the AI Memory dictionary
+# 2. Create the AI Memory dictionary (Standardized to UPPERCASE to prevent dupes)
 memory_dict = {}
 if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matched_Item_Name' in learned_df.columns:
-    memory_dict = dict(zip(learned_df['Billed_Description'].astype(str).str.strip(), learned_df['Matched_Item_Name'].astype(str).str.strip()))
+    memory_dict = dict(zip(learned_df['Billed_Description'].astype(str).str.strip().str.upper(), learned_df['Matched_Item_Name'].astype(str).str.strip()))
 
 # Pre-process stock items for fuzzy matching
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
 def find_best_match(description):
-    desc = str(description).strip()
+    # Standardize incoming description
+    desc_clean_upper = str(description).strip().upper()
     
-    # --- NEW: Step 1. Check AI Memory Bank First ---
-    if desc in memory_dict:
-        return memory_dict[desc]
+    # Step 1. Check AI Memory Bank First
+    if desc_clean_upper in memory_dict:
+        return memory_dict[desc_clean_upper]
     
     # Step 2. Direct Substring Match
-    desc_lower = desc.lower()
+    desc_lower = str(description).strip().lower()
     for key, val in stock_items_lower.items():
         if desc_lower in key or key in desc_lower:
             return val
@@ -72,7 +72,7 @@ def find_best_match(description):
     return None
 
 st.title("📦 Hardware Inventory Management")
-tab1, tab2, tab3, tab4 = st.tabs(["🛒 Record Purchase", "📊 View Inventory", "📋 Product Master", "📤 Bulk Upload Sales"])
+tab1, tab2, tab3, tab4 = st.tabs(["🛒 Record Purchase", "📊 View Inventory", "📋 Masters & AI Memory", "📤 Bulk Upload Sales"])
 
 # --- TAB 1: RECORD PURCHASE ---
 with tab1:
@@ -132,10 +132,32 @@ with tab2:
     else:
         st.write("No inventory data found.")
 
-# --- TAB 3: PRODUCT MASTER ---
+# --- TAB 3: PRODUCT MASTER & AI MEMORY ---
 with tab3:
-    st.header("Base Product Master")
+    st.header("Database & AI Memory")
+    
+    st.subheader("1. Base Product Master")
     st.dataframe(products_df, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    st.subheader("2. AI Learned Mappings (Memory Bank)")
+    st.write("The AI automatically saves rules when you manually match items. It uses these to get smarter over time.")
+    
+    if not learned_df.empty:
+        st.dataframe(learned_df, use_container_width=True, hide_index=True)
+        
+        if st.button("🧹 Optimize & Clean Duplicates from AI Memory"):
+            clean_df = learned_df.copy()
+            clean_df['Billed_Description'] = clean_df['Billed_Description'].astype(str).str.strip().str.upper()
+            clean_df = clean_df.drop_duplicates(subset=["Billed_Description"], keep="last")
+            
+            conn.update(worksheet="Learned_Mappings", data=clean_df)
+            st.cache_data.clear()
+            st.success("✅ AI Memory Optimized! All duplicate formatting variations have been removed.")
+            st.rerun()
+    else:
+        st.info("The AI Memory is currently empty. It will learn when you manually map unmatched items!")
 
 # --- TAB 4: BULK UPLOAD SALES ---
 with tab4:
@@ -143,6 +165,8 @@ with tab4:
     uploaded_file = st.file_uploader("Upload Sales File (No Headers)", type=['csv', 'xlsx'])
     
     if uploaded_file is not None:
+        
+        # 1. INITIAL LOAD & DUPLICATE CHECK
         if "processed_file_name" not in st.session_state or st.session_state.processed_file_name != uploaded_file.name:
             try:
                 if uploaded_file.name.endswith('.csv'):
@@ -150,54 +174,111 @@ with tab4:
                 else:
                     df_upload = pd.read_excel(uploaded_file, header=None)
                 
-                auto_matched_records = []
-                unmatched_raw_records = []
+                # Check for Duplicate Bills
+                df_upload[1] = df_upload[1].astype(str).str.strip()
+                uploaded_bills_count = df_upload.groupby(1).size().to_dict()
                 
-                for index, row in df_upload.iterrows():
-                    date_val = row[0]
-                    bill_val = row[1] 
-                    qty_val = float(row[2])
-                    
-                    raw_item_code = str(row[4]).strip() if pd.notna(row[4]) else ""
-                    other_desc = str(row[5]).strip() if pd.notna(row[5]) else ""
-                    mapped_name = code_dict.get(raw_item_code, raw_item_code)
-                    
-                    if mapped_name and mapped_name.lower() != 'nan':
-                        merged_description = f"{mapped_name} - {other_desc}"
-                    else:
-                        merged_description = other_desc
-                    
-                    # Fuzzy match now inherently uses the Memory Bank first!
-                    matched_item = find_best_match(merged_description)
-                    
-                    if matched_item:
-                        item_details = products_df[products_df['Item_Name'] == matched_item].iloc[0]
-                        auto_matched_records.append({
-                            "Date": date_val,
-                            "Bill Number": bill_val, 
-                            "Group": item_details['Group'], 
-                            "Item_Name": matched_item,
-                            "Purchase Qty": 0, 
-                            "Purchase Unit": "-", 
-                            "Stock Qty Added": -abs(qty_val), 
-                            "Stock Unit": item_details['Sales_Unit'], 
-                            "Display_Desc": merged_description
-                        })
-                    else:
-                        unmatched_raw_records.append({
-                            "Date": date_val, 
-                            "Bill Number": bill_val, 
-                            "Qty": qty_val, 
-                            "Description": merged_description
-                        })
+                db_bills_count = {}
+                if not purchases_df.empty and 'Bill Number' in purchases_df.columns:
+                    db_bills_count = purchases_df['Bill Number'].astype(str).str.strip().value_counts().to_dict()
                 
-                st.session_state.auto_matched = auto_matched_records
-                st.session_state.unmatched = unmatched_raw_records
+                duplicate_bills = []
+                for b_no, count in uploaded_bills_count.items():
+                    # Condition: Bill Number exists AND has the same number of items
+                    if b_no in db_bills_count and db_bills_count[b_no] == count:
+                        duplicate_bills.append(b_no)
+                
+                st.session_state.raw_upload_data = df_upload
                 st.session_state.processed_file_name = uploaded_file.name
+                st.session_state.bills_to_delete = [] # To store bills marked for Override
                 
+                if duplicate_bills:
+                    st.session_state.resolving_duplicates = True
+                    st.session_state.duplicate_bills = duplicate_bills
+                else:
+                    st.session_state.resolving_duplicates = False
+                    st.session_state.df_to_process = df_upload
+                
+                st.rerun()
             except Exception as e:
-                st.error(f"Error processing file: {e}")
+                st.error(f"Error reading file: {e}")
 
+        # 2. DUPLICATE RESOLUTION UI
+        if st.session_state.get("resolving_duplicates", False):
+            st.warning(f"⚠️ Found {len(st.session_state.duplicate_bills)} duplicate bill(s) matching exactly in the database.")
+            
+            with st.form("resolve_duplicates_form"):
+                resolutions = {}
+                for bill in st.session_state.duplicate_bills:
+                    resolutions[bill] = st.radio(
+                        f"Bill Number: {bill}",
+                        options=["Skip (Do not import)", "Override (Replace old bill)", "Add Duplicate (Keep both)"],
+                        key=f"res_{bill}"
+                    )
+                
+                if st.form_submit_button("Confirm Resolutions", type="primary"):
+                    df_to_process = st.session_state.raw_upload_data.copy()
+                    bills_to_delete = []
+                    
+                    for bill, action in resolutions.items():
+                        if "Skip" in action:
+                            df_to_process = df_to_process[df_to_process[1] != bill]
+                        elif "Override" in action:
+                            bills_to_delete.append(bill)
+                    
+                    st.session_state.bills_to_delete = bills_to_delete
+                    st.session_state.df_to_process = df_to_process
+                    st.session_state.resolving_duplicates = False
+                    st.rerun()
+
+        # 3. FUZZY MATCHING (Runs after duplicates are resolved)
+        if not st.session_state.get("resolving_duplicates", False) and "auto_matched" not in st.session_state and "df_to_process" in st.session_state:
+            df_to_process = st.session_state.df_to_process
+            auto_matched_records = []
+            unmatched_raw_records = []
+            
+            for index, row in df_to_process.iterrows():
+                date_val = row[0]
+                bill_val = str(row[1]).strip()
+                qty_val = float(row[2])
+                
+                raw_item_code = str(row[4]).strip() if pd.notna(row[4]) else ""
+                other_desc = str(row[5]).strip() if pd.notna(row[5]) else ""
+                mapped_name = code_dict.get(raw_item_code, raw_item_code)
+                
+                if mapped_name and mapped_name.lower() != 'nan':
+                    merged_description = f"{mapped_name} - {other_desc}"
+                else:
+                    merged_description = other_desc
+                
+                matched_item = find_best_match(merged_description)
+                
+                if matched_item:
+                    item_details = products_df[products_df['Item_Name'] == matched_item].iloc[0]
+                    auto_matched_records.append({
+                        "Date": date_val,
+                        "Bill Number": bill_val, 
+                        "Group": item_details['Group'], 
+                        "Item_Name": matched_item,
+                        "Purchase Qty": 0, 
+                        "Purchase Unit": "-", 
+                        "Stock Qty Added": -abs(qty_val), 
+                        "Stock Unit": item_details['Sales_Unit'], 
+                        "Display_Desc": merged_description
+                    })
+                else:
+                    unmatched_raw_records.append({
+                        "Date": date_val, 
+                        "Bill Number": bill_val, 
+                        "Qty": qty_val, 
+                        "Description": merged_description
+                    })
+            
+            st.session_state.auto_matched = auto_matched_records
+            st.session_state.unmatched = unmatched_raw_records
+            st.rerun()
+
+        # 4. FINAL REVIEW & COMMIT UI
         if "auto_matched" in st.session_state:
             auto_matched = st.session_state.auto_matched
             unmatched = st.session_state.unmatched
@@ -210,6 +291,39 @@ with tab4:
             
             final_records_to_commit = list(auto_matched) 
             
+            # --- Unified Commit Function to Handle Overrides and Memory ---
+            def commit_sales_to_db(new_learned=None):
+                clean_records = [{k: v for k, v in r.items() if k != 'Display_Desc'} for r in final_records_to_commit]
+                new_records_df = pd.DataFrame(clean_records)
+                
+                # Apply Overrides (Remove old bills marked for deletion)
+                current_purchases = purchases_df.copy()
+                bills_to_delete = st.session_state.get("bills_to_delete", [])
+                if bills_to_delete and not current_purchases.empty and 'Bill Number' in current_purchases.columns:
+                    current_purchases = current_purchases[~current_purchases['Bill Number'].astype(str).str.strip().isin(bills_to_delete)]
+                
+                # Combine & Save Sales
+                if not new_records_df.empty:
+                    updated_purchases = pd.concat([current_purchases, new_records_df], ignore_index=True)
+                    conn.update(worksheet="Purchases", data=updated_purchases)
+                
+                # Save the AI Memory Bank Rules without Duplicates
+                if new_learned:
+                    new_rules_df = pd.DataFrame(new_learned)
+                    updated_learnings = pd.concat([learned_df, new_rules_df], ignore_index=True)
+                    updated_learnings['Billed_Description'] = updated_learnings['Billed_Description'].astype(str).str.strip().str.upper()
+                    updated_learnings = updated_learnings.drop_duplicates(subset=["Billed_Description"], keep="last")
+                    conn.update(worksheet="Learned_Mappings", data=updated_learnings)
+                
+                # Reset Cache & State
+                st.cache_data.clear()
+                keys_to_clear = ['auto_matched', 'unmatched', 'processed_file_name', 'raw_upload_data', 'resolving_duplicates', 'df_to_process', 'bills_to_delete']
+                for key in keys_to_clear:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.success("🎉 Database updated successfully!")
+                st.rerun()
+
             if unmatched:
                 st.warning(f"⚠️ {len(unmatched)} items could not be matched automatically.")
                 with st.form("manual_mapping_form"):
@@ -232,59 +346,8 @@ with tab4:
                         
                     st.write("")
                     if st.form_submit_button("Confirm Manual Matches & Commit ALL Sales", type="primary"):
-                        new_learned_rules = [] # --- NEW: List to hold what we just learned ---
+                        new_learned_rules = [] 
                         
                         for un_row, selected_item in manual_selections:
                             if selected_item != "-- Skip / Do Not Import --":
-                                item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
-                                
-                                # 1. Prepare the inventory deduction record
-                                final_records_to_commit.append({
-                                    "Date": un_row['Date'], 
-                                    "Bill Number": un_row['Bill Number'], 
-                                    "Group": item_details['Group'], 
-                                    "Item_Name": selected_item,
-                                    "Purchase Qty": 0, 
-                                    "Purchase Unit": "-", 
-                                    "Stock Qty Added": -abs(un_row['Qty']), 
-                                    "Stock Unit": item_details['Sales_Unit'], 
-                                    "Display_Desc": un_row['Description']
-                                })
-                                
-                                # 2. Document the new rule for the Memory Bank
-                                new_learned_rules.append({
-                                    "Billed_Description": un_row['Description'],
-                                    "Matched_Item_Name": selected_item
-                                })
-                        
-                        # Execute the updates
-                        if final_records_to_commit:
-                            # A. Save the Sales to Purchases tab
-                            clean_records = [{k: v for k, v in r.items() if k != 'Display_Desc'} for r in final_records_to_commit]
-                            new_records_df = pd.DataFrame(clean_records)
-                            updated_purchases = pd.concat([purchases_df, new_records_df], ignore_index=True)
-                            conn.update(worksheet="Purchases", data=updated_purchases)
-                            
-                            # B. Save the new knowledge to Learned_Mappings tab
-                            if new_learned_rules:
-                                new_rules_df = pd.DataFrame(new_learned_rules)
-                                # Combine old rules with new rules, dropping duplicates so we only keep the newest manual override!
-                                updated_learnings = pd.concat([learned_df, new_rules_df], ignore_index=True).drop_duplicates(subset=["Billed_Description"], keep="last")
-                                conn.update(worksheet="Learned_Mappings", data=updated_learnings)
-                            
-                            # Reset app cache
-                            st.cache_data.clear()
-                            for key in ['auto_matched', 'unmatched', 'processed_file_name']: del st.session_state[key]
-                            st.success("🎉 Database updated & AI Memory expanded successfully!")
-                            st.rerun()
-            else:
-                if st.button("Commit Sales to Database", type="primary"):
-                    if final_records_to_commit:
-                        clean_records = [{k: v for k, v in r.items() if k != 'Display_Desc'} for r in final_records_to_commit]
-                        new_records_df = pd.DataFrame(clean_records)
-                        updated_purchases = pd.concat([purchases_df, new_records_df], ignore_index=True)
-                        conn.update(worksheet="Purchases", data=updated_purchases)
-                        st.cache_data.clear()
-                        for key in ['auto_matched', 'unmatched', 'processed_file_name']: del st.session_state[key]
-                        st.success("🎉 Database updated successfully!")
-                        st.rerun()
+                                item_details = products_df[products_df['Item_Name'] == selected_item].
