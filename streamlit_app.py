@@ -151,6 +151,7 @@ with tab2:
         
         if ledger_item:
             ledger = purchases_df[purchases_df['Item_Name'] == ledger_item].copy()
+            # Parse dates safely to sort them chronologically
             ledger['Date_Parsed'] = pd.to_datetime(ledger['Date'], dayfirst=True, errors='coerce')
             ledger = ledger.sort_values('Date_Parsed')
             ledger['Running Balance'] = ledger['Stock Qty Added'].cumsum()
@@ -191,6 +192,8 @@ with tab4:
     uploaded_file = st.file_uploader("Upload Sales File (No Headers)", type=['csv', 'xlsx'])
     
     if uploaded_file is not None:
+        
+        # --- Check if this exact file was ALREADY successfully saved to prevent infinite loops ---
         if st.session_state.get("committed_file_name") == uploaded_file.name:
             st.success("🎉 Database updated successfully! Please clear the file above (click the 'X') to upload a new one.")
         else:
@@ -271,13 +274,12 @@ with tab4:
                     raw_item_code = str(row[4]).strip() if pd.notna(row[4]) else ""
                     other_desc = str(row[5]).strip() if pd.notna(row[5]) else ""
                     
-                    # Ensure raw combo string explicitly captures exactly what was uploaded in col 4 and 5
-                    raw_combo = f"{raw_item_code} - {other_desc}".strip(" -")
-                    
+                    # Translate code to mapped name
                     mapped_name = code_dict.get(raw_item_code, raw_item_code)
                     
+                    # Ensure the combination uses the newly mapped name + description
                     if mapped_name and mapped_name.lower() != 'nan':
-                        merged_description = f"{mapped_name} - {other_desc}"
+                        merged_description = f"{mapped_name} - {other_desc}".strip(" -")
                     else:
                         merged_description = other_desc
                     
@@ -294,7 +296,7 @@ with tab4:
                             "Purchase Unit": "-", 
                             "Stock Qty Added": -abs(qty_val), 
                             "Stock Unit": item_details['Sales_Unit'], 
-                            "Original Billed Data": raw_combo,  # NEW COLUMN: Shows exactly what was in the Excel row
+                            "Original Billed Data": merged_description,  # CHANGED to show Mapped Name instead of Raw Code
                             "Display_Desc": merged_description
                         })
                     else:
@@ -303,7 +305,7 @@ with tab4:
                             "Bill Number": bill_val, 
                             "Qty": qty_val, 
                             "Description": merged_description,
-                            "Original Billed Data": raw_combo
+                            "Original Billed Data": merged_description   # CHANGED to show Mapped Name instead of Raw Code
                         })
                 
                 st.session_state.auto_matched = auto_matched_records
@@ -374,7 +376,7 @@ with tab4:
                         for idx, un_row in enumerate(unmatched):
                             c1, c2, c3, c4 = st.columns([1, 2, 1, 3])
                             with c1: st.write(un_row['Bill Number'])
-                            with c2: st.write(un_row['Description'])
+                            with c2: st.write(un_row['Original Billed Data'])
                             with c3: st.write(un_row['Qty'])
                             with c4:
                                 selected = st.selectbox("Match", options=["-- Skip / Do Not Import --"] + stock_items, key=f"un_{idx}", label_visibility="collapsed")
