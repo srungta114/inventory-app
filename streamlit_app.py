@@ -350,4 +350,4 @@ with tab4:
                         
                         for un_row, selected_item in manual_selections:
                             if selected_item != "-- Skip / Do Not Import --":
-                                item_details = products_df[products_df['Item_Name'] == selected_item].
+                                item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
