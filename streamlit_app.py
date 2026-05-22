@@ -17,8 +17,22 @@ def get_product_master():
 def get_purchases():
     return conn.read(worksheet="Purchases")
 
+@st.cache_data(ttl=10)
+def get_code_mapping():
+    try:
+        # Reads the new mapping tab we added
+        return conn.read(worksheet="Code_Mapping")
+    except:
+        return pd.DataFrame(columns=["Item Code", "Item Name"])
+
 products_df = get_product_master()
 purchases_df = get_purchases()
+mapping_df = get_code_mapping()
+
+# Create the translation dictionary (PI00001 -> MS PIPE)
+code_dict = {}
+if not mapping_df.empty and 'Item Code' in mapping_df.columns and 'Item Name' in mapping_df.columns:
+    code_dict = dict(zip(mapping_df['Item Code'].astype(str).str.strip(), mapping_df['Item Name'].astype(str).str.strip()))
 
 # Pre-process stock items for fuzzy matching
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
@@ -52,7 +66,6 @@ with tab1:
         with st.form("purchase_form", clear_on_submit=True):
             st.subheader(f"Selected: {selected_item}")
             
-            # --- NEW: BILL NUMBER INPUT ---
             bill_number = st.text_input("Bill / Invoice Number", placeholder="Enter Bill Number...")
             
             c1, c2 = st.columns(2)
@@ -71,7 +84,7 @@ with tab1:
                     final_stock = stock_qty if p_unit != s_unit else purchase_qty
                     new_record = pd.DataFrame([{
                         "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Bill Number": bill_number, # --- NEW: SAVING BILL NUMBER ---
+                        "Bill Number": bill_number, 
                         "Group": group,
                         "Item_Name": selected_item,
                         "Purchase Qty": purchase_qty,
@@ -120,31 +133,43 @@ with tab4:
                 
                 for index, row in df_upload.iterrows():
                     date_val = row[0]
-                    bill_val = row[1] # --- NEW: EXTRACTING BILL NUMBER FROM FILE ---
+                    bill_val = row[1] 
                     qty_val = float(row[2])
-                    description = row[5]
                     
-                    matched_item = find_best_match(description)
+                    # --- NEW LOGIC: Map Code to Name before combining ---
+                    raw_item_code = str(row[4]).strip() if pd.notna(row[4]) else ""
+                    other_desc = str(row[5]).strip() if pd.notna(row[5]) else ""
+                    
+                    # Translate the code (e.g. PI000002 -> MS PIPE)
+                    mapped_name = code_dict.get(raw_item_code, raw_item_code)
+                    
+                    # Merge the translated name with the typed description
+                    if mapped_name and mapped_name.lower() != 'nan':
+                        merged_description = f"{mapped_name} - {other_desc}"
+                    else:
+                        merged_description = other_desc
+                    
+                    matched_item = find_best_match(merged_description)
                     
                     if matched_item:
                         item_details = products_df[products_df['Item_Name'] == matched_item].iloc[0]
                         auto_matched_records.append({
                             "Date": date_val,
-                            "Bill Number": bill_val, # --- NEW: SAVING BILL NUMBER ---
+                            "Bill Number": bill_val, 
                             "Group": item_details['Group'], 
                             "Item_Name": matched_item,
                             "Purchase Qty": 0, 
                             "Purchase Unit": "-", 
                             "Stock Qty Added": -abs(qty_val), 
                             "Stock Unit": item_details['Sales_Unit'], 
-                            "Display_Desc": description
+                            "Display_Desc": merged_description
                         })
                     else:
                         unmatched_raw_records.append({
                             "Date": date_val, 
-                            "Bill Number": bill_val, # --- NEW: SAVING BILL NUMBER ---
+                            "Bill Number": bill_val, 
                             "Qty": qty_val, 
-                            "Description": description
+                            "Description": merged_description
                         })
                 
                 st.session_state.auto_matched = auto_matched_records
@@ -180,7 +205,7 @@ with tab4:
                     for idx, un_row in enumerate(unmatched):
                         c1, c2, c3, c4 = st.columns([1, 2, 1, 3])
                         with c1: st.write(un_row['Bill Number'])
-                        with c2: st.write(un_row['Description'])
+                        with c2: st.write(un_row['Description']) # Shows the newly translated combo!
                         with c3: st.write(un_row['Qty'])
                         with c4:
                             selected = st.selectbox("Match", options=["-- Skip / Do Not Import --"] + stock_items, key=f"un_{idx}", label_visibility="collapsed")
@@ -193,7 +218,7 @@ with tab4:
                                 item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
                                 final_records_to_commit.append({
                                     "Date": un_row['Date'], 
-                                    "Bill Number": un_row['Bill Number'], # --- NEW: SAVING BILL NUMBER ---
+                                    "Bill Number": un_row['Bill Number'], 
                                     "Group": item_details['Group'], 
                                     "Item_Name": selected_item,
                                     "Purchase Qty": 0, 
