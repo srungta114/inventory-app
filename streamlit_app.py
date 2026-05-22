@@ -151,7 +151,6 @@ with tab2:
         
         if ledger_item:
             ledger = purchases_df[purchases_df['Item_Name'] == ledger_item].copy()
-            # Parse dates safely to sort them chronologically
             ledger['Date_Parsed'] = pd.to_datetime(ledger['Date'], dayfirst=True, errors='coerce')
             ledger = ledger.sort_values('Date_Parsed')
             ledger['Running Balance'] = ledger['Stock Qty Added'].cumsum()
@@ -192,8 +191,6 @@ with tab4:
     uploaded_file = st.file_uploader("Upload Sales File (No Headers)", type=['csv', 'xlsx'])
     
     if uploaded_file is not None:
-        
-        # --- Check if this exact file was ALREADY successfully saved to prevent infinite loops ---
         if st.session_state.get("committed_file_name") == uploaded_file.name:
             st.success("🎉 Database updated successfully! Please clear the file above (click the 'X') to upload a new one.")
         else:
@@ -273,6 +270,10 @@ with tab4:
                     
                     raw_item_code = str(row[4]).strip() if pd.notna(row[4]) else ""
                     other_desc = str(row[5]).strip() if pd.notna(row[5]) else ""
+                    
+                    # Ensure raw combo string explicitly captures exactly what was uploaded in col 4 and 5
+                    raw_combo = f"{raw_item_code} - {other_desc}".strip(" -")
+                    
                     mapped_name = code_dict.get(raw_item_code, raw_item_code)
                     
                     if mapped_name and mapped_name.lower() != 'nan':
@@ -293,6 +294,7 @@ with tab4:
                             "Purchase Unit": "-", 
                             "Stock Qty Added": -abs(qty_val), 
                             "Stock Unit": item_details['Sales_Unit'], 
+                            "Original Billed Data": raw_combo,  # NEW COLUMN: Shows exactly what was in the Excel row
                             "Display_Desc": merged_description
                         })
                     else:
@@ -300,7 +302,8 @@ with tab4:
                             "Date": date_val, 
                             "Bill Number": bill_val, 
                             "Qty": qty_val, 
-                            "Description": merged_description
+                            "Description": merged_description,
+                            "Original Billed Data": raw_combo
                         })
                 
                 st.session_state.auto_matched = auto_matched_records
@@ -314,6 +317,7 @@ with tab4:
                 
                 if auto_matched:
                     st.success(f"✅ Automatically matched {len(auto_matched)} items.")
+                    # Show the Original Billed Data, but hide the internal logic field Display_Desc
                     display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc'], errors='ignore')
                     with st.expander("View Auto-Matched Items"):
                         st.dataframe(display_df, use_container_width=True)
@@ -322,17 +326,16 @@ with tab4:
                 
                 # --- Unified Safe Commit Function ---
                 def commit_sales_to_db(new_learned=None):
-                    clean_records = [{k: v for k, v in r.items() if k != 'Display_Desc'} for r in final_records_to_commit]
+                    # Filter out the visual/temporary columns before saving to the DB
+                    clean_records = [{k: v for k, v in r.items() if k not in ['Display_Desc', 'Original Billed Data']} for r in final_records_to_commit]
                     new_records_df = pd.DataFrame(clean_records)
                     
                     current_purchases = purchases_df.copy()
                     bills_to_delete = st.session_state.get("bills_to_delete", [])
                     
-                    # Apply Overrides (Remove old bills marked for deletion)
                     if bills_to_delete and not current_purchases.empty and 'Bill Number' in current_purchases.columns:
                         current_purchases = current_purchases[~current_purchases['Bill Number'].astype(str).str.strip().isin(bills_to_delete)]
                     
-                    # Save Sales (if there are new records, OR if we deleted overrides)
                     if not new_records_df.empty or bills_to_delete:
                         if not new_records_df.empty:
                             updated_purchases = pd.concat([current_purchases, new_records_df], ignore_index=True)
@@ -340,7 +343,6 @@ with tab4:
                             updated_purchases = current_purchases
                         save_purchases(updated_purchases)
                     
-                    # Save the AI Memory Bank
                     if new_learned:
                         new_rules_df = pd.DataFrame(new_learned)
                         updated_learnings = pd.concat([learned_df, new_rules_df], ignore_index=True)
@@ -348,13 +350,9 @@ with tab4:
                         updated_learnings = updated_learnings.drop_duplicates(subset=["Billed_Description"], keep="last")
                         conn.update(worksheet="Learned_Mappings", data=updated_learnings)
                     
-                    # Clean the cache
                     st.cache_data.clear()
-                    
-                    # Lock the file from looping
                     st.session_state.committed_file_name = st.session_state.processed_file_name
                     
-                    # Wipe temporary states
                     keys_to_clear = ['auto_matched', 'unmatched', 'raw_upload_data', 'resolving_duplicates', 'df_to_process', 'bills_to_delete']
                     for key in keys_to_clear:
                         if key in st.session_state:
@@ -399,6 +397,7 @@ with tab4:
                                         "Purchase Unit": "-", 
                                         "Stock Qty Added": -abs(un_row['Qty']), 
                                         "Stock Unit": item_details['Sales_Unit'], 
+                                        "Original Billed Data": un_row['Original Billed Data'], 
                                         "Display_Desc": un_row['Description']
                                     })
                                     
@@ -415,7 +414,6 @@ with tab4:
                             commit_sales_to_db()
 
     else:
-        # Clean up memory lock when you remove the file
         keys_to_clear = ['auto_matched', 'unmatched', 'processed_file_name', 'raw_upload_data', 'resolving_duplicates', 'df_to_process', 'bills_to_delete', 'committed_file_name']
         for key in keys_to_clear:
             if key in st.session_state:
@@ -429,7 +427,6 @@ def bill_editor(is_purchase, suffix):
         st.info("No records found.")
         return
         
-    # Filter for Purchases (Qty > 0) or Sales (Qty < 0)
     if is_purchase:
         df_filtered = purchases_df[pd.to_numeric(purchases_df['Purchase Qty'], errors='coerce') > 0].copy()
     else:
@@ -439,7 +436,6 @@ def bill_editor(is_purchase, suffix):
         st.info(f"No {'purchase' if is_purchase else 'sales'} records found.")
         return
 
-    # Create a nice label combining Bill Number + Date for the dropdown
     df_filtered['Date_Str'] = pd.to_datetime(df_filtered['Date'], dayfirst=True, errors='coerce').dt.strftime('%d/%m/%Y')
     df_filtered['Bill_Label'] = df_filtered['Bill Number'].astype(str).str.strip() + " (Date: " + df_filtered['Date_Str'].astype(str) + ")"
     
@@ -447,20 +443,15 @@ def bill_editor(is_purchase, suffix):
     selected_label = st.selectbox(f"Select Bill to Edit", options=bill_list, index=None, key=f"sel_{suffix}")
 
     if selected_label:
-        # Grab exactly the rows for the selected bill
         bill_data = df_filtered[df_filtered['Bill_Label'] == selected_label].copy()
         original_indices = bill_data.index
-        
-        # Clean up display (drop the temporary helper columns)
         display_df = bill_data.drop(columns=['Bill_Label', 'Date_Str'])
         
         edited_df = st.data_editor(display_df, key=f"edit_{suffix}", use_container_width=True)
 
         if st.button("💾 Save Bill Changes", key=f"save_{suffix}", type="primary"):
-            # Drop the original rows from the main DB, append the edited ones
             final_df = purchases_df.drop(index=original_indices).copy()
             final_df = pd.concat([final_df, edited_df], ignore_index=True)
-            
             save_purchases(final_df)
             st.cache_data.clear()
             st.success("✅ Bill updated successfully!")
