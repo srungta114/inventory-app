@@ -83,6 +83,13 @@ def find_best_match(description):
     # Rule 5: MS PLAIN ROD -> PLAIN ROD
     desc_lower = re.sub(r'\bms\s+plain\s+rod\b', 'plain rod', desc_lower)
     
+    # Rule 6: MS SQ PIPE -> SQUARE PIPE
+    desc_lower = re.sub(r'\bms\s+sq\s+pipe\b', 'square pipe', desc_lower)
+    desc_lower = re.sub(r'\bms\s+square\s+pipe\b', 'square pipe', desc_lower)
+
+    # Rule 7: FIBRE CORRUGATED SHEET -> FIBRE JASTA
+    desc_lower = re.sub(r'\bfibre\s+corrugated\s+sheet\b', 'fibre jasta', desc_lower)
+    
     # Rule 2: If 'ms' AND 'round' AND 'pipe' are ALL mentioned, swap to 'black pipe'
     if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
         desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
@@ -103,6 +110,9 @@ def find_best_match(description):
     if desc_words:
         for key, val in stock_items_lower.items():
             key_words = set(key.split())
+            if not key_words:
+                continue
+            
             score = 0
             
             # Compare each word in description against words in the master item
@@ -110,23 +120,30 @@ def find_best_match(description):
                 if d_word in key_words:
                     score += 1 # Exact word match
                 else:
-                    # Fuzzy match the individual word (allows for minor spelling errors)
-                    if get_close_matches(d_word, key_words, n=1, cutoff=0.7):
-                        score += 0.7 
+                    # Fuzzy match the individual word (requires 80% similarity)
+                    if get_close_matches(d_word, key_words, n=1, cutoff=0.8):
+                        score += 0.8 
             
-            # Normalize the score by the length to penalize vastly different string lengths
-            match_ratio = score / max(len(desc_words), len(key_words))
+            # Calculate the denominator, but FORGIVE 1 extra word in the billed description
+            effective_desc_len = len(desc_words)
+            if len(desc_words) > len(key_words):
+                effective_desc_len -= 1  # Ignore the 1 extra word penalty
+                
+            denominator = max(len(key_words), effective_desc_len)
+            
+            # Normalize the score
+            match_ratio = score / denominator if denominator > 0 else 0
             
             if match_ratio > highest_score:
                 highest_score = match_ratio
                 best_match = val
         
-        # If the word-by-word algorithm found a reasonable match (>= 40% confidence)
-        if highest_score >= 0.4:
+        # Word-by-word algorithm requires a strict minimum 80% confidence
+        if highest_score >= 0.8:
             return best_match
             
-    # Step 5: Absolute Fallback (Standard Fuzzy Match on the whole string)
-    matches = get_close_matches(desc_lower, stock_items_lower.keys(), n=1, cutoff=0.4)
+    # Step 5: Absolute Fallback (Standard Fuzzy Match on the whole string, strict 80% cutoff)
+    matches = get_close_matches(desc_lower, stock_items_lower.keys(), n=1, cutoff=0.8)
     if matches:
         return stock_items_lower[matches[0]]
         
