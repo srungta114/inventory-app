@@ -1,3 +1,10 @@
+Here is the **complete, finalized code**.
+
+I have replaced the `find_best_match` function in your provided code with the fully reworked AI logic from the previous step. It now rigorously extracts every word, scores them against the entire master list, strictly enforces the 80% confidence threshold, and safely drops anything lower into the manual matching bucket.
+
+Copy this entire block and overwrite your `app.py` file on GitHub:
+
+```python
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
@@ -62,9 +69,9 @@ if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matc
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
-# --- CORRECTED ADVANCED WORD-BY-WORD FUZZY AI LOGIC ---
+# --- REWORKED STRICT WORD-BY-WORD AI LOGIC ---
 def find_best_match(description):
-    # 1. Pre-process and Apply Rules FIRST (Before any matching)
+    # 1. Pre-process and Apply Parameter Rules FIRST
     desc_lower = str(description).strip().lower()
     
     # Rule 1: 'red' -> 'maroon'
@@ -84,35 +91,46 @@ def find_best_match(description):
     
     # Rule 2: MS + ROUND + PIPE -> BLACK PIPE
     if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
-        desc_lower = 'black pipe'
+        desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
+        desc_lower = re.sub(r'\bround\b', '', desc_lower)
+        desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
+        desc_lower = " ".join(desc_lower.split()) # Clean up double spaces
 
-    # 2. AI Memory Bank (Exact Override)
+    # 2. AI Memory Bank Check (Immediate override if previously trained)
     desc_clean_upper = desc_lower.upper()
     if desc_clean_upper in memory_dict:
         return memory_dict[desc_clean_upper]
 
-    # 3. Rule 8: STRICT HULAS MATCHING (Brand Isolation)
+    # 3. Rule 8: STRICT HULAS MATCHING (Filter Master List)
     has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
-    # Filter candidates: If input has Hulas, only allow Master items with Hulas
     candidate_items = {k: v for k, v in stock_items_lower.items() 
                        if bool(re.search(r'\bhulas\b', k)) == has_hulas}
 
-    # 4. Scoring Algorithm (Word-by-word)
+    # 4. Extract all words and strictly score the entire product master
     best_match = None
     highest_score = 0
     desc_words = set(desc_lower.split())
     
+    if not desc_words:
+        return None
+    
     for key, val in candidate_items.items():
+        # Quick 100% exact match bypass
+        if desc_lower == key: 
+            return val 
+            
         key_words = set(key.split())
         if not key_words: continue
         
-        # Exact match bonus
-        if desc_lower == key: return val
-            
-        # Scoring
-        score = sum(1 for w in desc_words if w in key_words)
-        score += sum(0.8 for w in desc_words if w not in key_words and get_close_matches(w, key_words, n=1, cutoff=0.8))
+        score = 0
+        # Compare every extracted word to the master item's words
+        for d_word in desc_words:
+            if d_word in key_words:
+                score += 1 # Exact word match
+            elif get_close_matches(d_word, key_words, n=1, cutoff=0.8):
+                score += 0.8 # Fuzzy word match (min 80% similarity required)
         
+        # Calculate Strict Ratio: Total score / Max words between the two strings
         denominator = max(len(key_words), len(desc_words))
         match_ratio = score / denominator if denominator > 0 else 0
         
@@ -120,7 +138,12 @@ def find_best_match(description):
             highest_score = match_ratio
             best_match = val
             
-    return best_match if highest_score >= 0.8 else None
+    # 5. Only pass if the absolute highest ratio is 80% or more, else send to manual review
+    if highest_score >= 0.8:
+        return best_match
+        
+    return None
+
 st.title("📦 Hardware Inventory Management")
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🛒 Record Purchase", "📊 View Inventory", "📋 Masters & AI Memory", "📤 Bulk Upload Sales", "📝 Edit Purchase Bills", "📝 Edit Sales Bills"
@@ -576,3 +599,5 @@ with tab5:
     bill_editor(is_purchase=True, suffix="pur")
 with tab6:
     bill_editor(is_purchase=False, suffix="sal")
+
+```
