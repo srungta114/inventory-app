@@ -62,75 +62,113 @@ if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matc
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
-# --- REWORKED WORD-BY-WORD AI LOGIC (Lenient) ---
+# --- REWORKED AI LOGIC WITH DEBUGGING ---
 def find_best_match(description):
+    debug_log = {"Original": str(description)}
+    
     # 1. Pre-process and Apply Parameter Rules FIRST
     desc_lower = str(description).strip().lower()
     
-    # Rule 1: 'red' -> 'maroon'
     desc_lower = re.sub(r'\bred\b', 'maroon', desc_lower)
-    # Rule 4: MS SQ/SQUARE ROD -> SQUARE ROD
     desc_lower = re.sub(r'\bms\s+(sq|square)\s+rod\b', 'square rod', desc_lower)
-    # Rule 5: MS PLAIN ROD -> PLAIN ROD
     desc_lower = re.sub(r'\bms\s+plain\s+rod\b', 'plain rod', desc_lower)
-    # Rule 6: MS SQ PIPE -> SQUARE PIPE
     desc_lower = re.sub(r'\bms\s+(sq|square)\s+pipe\b', 'square pipe', desc_lower)
-    # Rule 7: FIBRE CORRUGATED SHEET -> FIBRE JASTA
     desc_lower = re.sub(r'\bfibre\s+corrugated\s+sheet\b', 'fibre jasta', desc_lower)
-    # Rule 2: MS + ROUND + PIPE -> BLACK PIPE
+    
     if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
         desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
         desc_lower = re.sub(r'\bround\b', '', desc_lower)
         desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
-        desc_lower = " ".join(desc_lower.split()) # Clean up double spaces
+        desc_lower = " ".join(desc_lower.split()) 
+        
+    debug_log["Cleaned"] = desc_lower
 
-    # 2. AI Memory Bank Check (Immediate override if previously trained)
+    # 2. AI Memory Bank Check
     desc_clean_upper = desc_lower.upper()
     if desc_clean_upper in memory_dict:
-        return memory_dict[desc_clean_upper]
+        debug_log["Status"] = "Memory Match"
+        return memory_dict[desc_clean_upper], debug_log
 
-    # 3. Rule 8: STRICT HULAS MATCHING (Filter Master List)
+    # 3. Rule 8: STRICT HULAS MATCHING
     has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
-    candidate_items = {k: v for k, v in stock_items_lower.items() 
-                       if bool(re.search(r'\bhulas\b', k)) == has_hulas}
+    debug_log["Hulas_Lock"] = has_hulas
+    
+    candidate_items = {k: v for k, v in stock_items_lower.items() if bool(re.search(r'\bhulas\b', k)) == has_hulas}
 
-    # 4. Extract all words and score the product master
+    # 4. Extract all words and score
     best_match = None
     highest_score = 0
     desc_words = set(desc_lower.split())
     
     if not desc_words:
-        return None
+        debug_log["Status"] = "Empty String"
+        return None, debug_log
+    
+    scoring_details = []
     
     for key, val in candidate_items.items():
-        # Quick 100% exact match bypass
         if desc_lower == key: 
-            return val 
+            debug_log["Status"] = "Exact Match"
+            return val, debug_log
             
         key_words = set(key.split())
         if not key_words: continue
         
         score = 0
-        # Compare every extracted word to the master item's words
+        exact_matches = []
+        fuzzy_matches = []
+        
         for d_word in desc_words:
             if d_word in key_words:
-                score += 1 # Exact word match
-            elif get_close_matches(d_word, key_words, n=1, cutoff=0.6):
-                score += 0.8 # Lenient fuzzy word match
+                score += 1 
+                exact_matches.append(d_word)
+            else:
+                fuzzy = get_close_matches(d_word, key_words, n=1, cutoff=0.6)
+                if fuzzy:
+                    score += 0.8
+                    fuzzy_matches.append(f"{d_word}->{fuzzy[0]}")
         
-        # Calculate Ratio
         denominator = max(len(key_words), len(desc_words))
         match_ratio = score / denominator if denominator > 0 else 0
         
+        if match_ratio > 0:
+            scoring_details.append({
+                "Item": val,
+                "Ratio": round(match_ratio, 2),
+                "Exact": exact_matches,
+                "Fuzzy": fuzzy_matches
+            })
+            
         if match_ratio > highest_score:
             highest_score = match_ratio
             best_match = val
             
-    # 5. Take the highest score (as long as it's not a complete mismatch)
+    # Sort and store top 3 scores for debugging
+    scoring_details = sorted(scoring_details, key=lambda x: x["Ratio"], reverse=True)[:3]
+    debug_log["Top_Scorers"] = scoring_details
+            
     if highest_score >= 0.3:
-        return best_match
+        debug_log["Status"] = "Fuzzy Passed"
+        return best_match, debug_log
         
-    return None
+    debug_log["Status"] = "Failed (Score < 0.3)"
+    return None, debug_log
+
+def format_debug_string(log):
+    if log.get("Status") in ["Memory Match", "Exact Match"]:
+        return f"🟢 {log['Status']}"
+    
+    res = f"Cleaned: '{log.get('Cleaned', '')}' | Hulas: {log.get('Hulas_Lock', False)} | "
+    scorers = log.get("Top_Scorers", [])
+    if scorers:
+        top = scorers[0]
+        res += f"🏆 Best: {top['Item']} ({top['Ratio']}) [E:{top['Exact']}, F:{top['Fuzzy']}]"
+        if len(scorers) > 1:
+            runner = scorers[1]
+            res += f" | 🥈 2nd: {runner['Item']} ({runner['Ratio']})"
+    else:
+        res += "❌ No similar items found in master."
+    return res
 
 st.title("📦 Hardware Inventory Management")
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -342,7 +380,8 @@ with tab4:
                     else:
                         merged_description = other_desc
                     
-                    matched_item = find_best_match(merged_description)
+                    matched_item, debug_log = find_best_match(merged_description)
+                    debug_str = format_debug_string(debug_log)
                     
                     if matched_item:
                         item_details = products_df[products_df['Item_Name'] == matched_item].iloc[0]
@@ -357,6 +396,7 @@ with tab4:
                             "Stock Unit": item_details['Sales_Unit'], 
                             "Original Billed Data": merged_description,
                             "Unit Check": unit_check, 
+                            "🤖 AI Reasoning": debug_str, # NEW DEBUG COLUMN
                             "Display_Desc": merged_description
                         })
                     else:
@@ -366,6 +406,7 @@ with tab4:
                             "Qty": qty_val, 
                             "Description": merged_description,
                             "Original Billed Data": merged_description,
+                            "🤖 AI Reasoning": debug_str, # NEW DEBUG COLUMN
                             "Unit Check": unit_check 
                         })
                 
@@ -380,7 +421,10 @@ with tab4:
                 
                 # --- Unified Safe Commit Function taking processed records ---
                 def commit_sales_to_db(records_to_save, new_learned=None):
-                    new_records_df = pd.DataFrame(records_to_save)
+                    # Filter out all visual/temporary columns before saving to DB
+                    clean_records = [{k: v for k, v in r.items() if k not in ['Display_Desc', 'Original Billed Data', 'Unit Check', '🤖 AI Reasoning']} for r in records_to_save]
+                    new_records_df = pd.DataFrame(clean_records)
+                    
                     current_purchases = purchases_df.copy()
                     bills_to_delete = st.session_state.get("bills_to_delete", [])
                     
@@ -437,21 +481,24 @@ with tab4:
                     st.warning(f"⚠️ {len(unmatched)} items could not be matched automatically.")
                     with st.form("manual_mapping_form"):
                         manual_selections = []
-                        h1, h2, h3, h4, h5 = st.columns([1, 2, 0.8, 1.2, 2.5])
+                        # Stretched layout to fit the new Debug column
+                        h1, h2, h3, h4, h5, h6 = st.columns([1, 1.5, 0.5, 1, 2.5, 2])
                         h1.write("**Bill No**")
                         h2.write("**Billed Description**")
                         h3.write("**Qty**")
-                        h4.write("**Unit Check**")
-                        h5.write("**Match to Master Product**")
+                        h4.write("**Unit**")
+                        h5.write("**🤖 AI Reasoning**")
+                        h6.write("**Match to Master Product**")
                         st.divider()
                         
                         for idx, un_row in enumerate(unmatched):
-                            c1, c2, c3, c4, c5 = st.columns([1, 2, 0.8, 1.2, 2.5])
+                            c1, c2, c3, c4, c5, c6 = st.columns([1, 1.5, 0.5, 1, 2.5, 2])
                             with c1: st.write(un_row['Bill Number'])
                             with c2: st.write(un_row['Original Billed Data'])
                             with c3: st.write(un_row['Qty'])
                             with c4: st.write(un_row.get('Unit Check', '-'))
-                            with c5:
+                            with c5: st.caption(un_row.get('🤖 AI Reasoning', '-'))
+                            with c6:
                                 selected = st.selectbox("Match", options=["-- Skip / Do Not Import --"] + stock_items, key=f"un_{idx}", label_visibility="collapsed")
                             manual_selections.append((un_row, selected))
                             
