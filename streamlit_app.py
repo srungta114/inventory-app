@@ -396,7 +396,7 @@ with tab4:
                             "Stock Unit": item_details['Sales_Unit'], 
                             "Original Billed Data": merged_description,
                             "Unit Check": unit_check, 
-                            "🤖 AI Reasoning": debug_str, # NEW DEBUG COLUMN
+                            "AI Reasoning": debug_str, 
                             "Display_Desc": merged_description
                         })
                     else:
@@ -406,7 +406,7 @@ with tab4:
                             "Qty": qty_val, 
                             "Description": merged_description,
                             "Original Billed Data": merged_description,
-                            "🤖 AI Reasoning": debug_str, # NEW DEBUG COLUMN
+                            "AI Reasoning": debug_str, 
                             "Unit Check": unit_check 
                         })
                 
@@ -421,8 +421,8 @@ with tab4:
                 
                 # --- Unified Safe Commit Function taking processed records ---
                 def commit_sales_to_db(records_to_save, new_learned=None):
-                    # Filter out all visual/temporary columns before saving to DB
-                    clean_records = [{k: v for k, v in r.items() if k not in ['Display_Desc', 'Original Billed Data', 'Unit Check', '🤖 AI Reasoning']} for r in records_to_save]
+                    # Filter out visual/temporary columns before saving to DB
+                    clean_records = [{k: v for k, v in r.items() if k not in ['Display_Desc', 'Original Billed Data', 'Unit Check', 'AI Reasoning']} for r in records_to_save]
                     new_records_df = pd.DataFrame(clean_records)
                     
                     current_purchases = purchases_df.copy()
@@ -459,7 +459,9 @@ with tab4:
                 if auto_matched:
                     st.success(f"✅ Automatically matched {len(auto_matched)} items.")
                     st.write("✏️ **Review and override any incorrect automatic matches below:**")
-                    display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc'], errors='ignore')
+                    
+                    # Drop DB clutter columns so 'AI Reasoning' fits perfectly on screen
+                    display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc', 'Group', 'Purchase Qty', 'Purchase Unit', 'Stock Qty Added', 'Stock Unit'], errors='ignore')
                     
                     edited_auto_df = st.data_editor(
                         display_df,
@@ -469,7 +471,8 @@ with tab4:
                                 help="Select the correct master product to override the AI",
                                 options=stock_items,
                                 required=True
-                            )
+                            ),
+                            "AI Reasoning": st.column_config.TextColumn("AI Reasoning", width="large")
                         },
                         use_container_width=True,
                         key="auto_match_editor"
@@ -481,13 +484,12 @@ with tab4:
                     st.warning(f"⚠️ {len(unmatched)} items could not be matched automatically.")
                     with st.form("manual_mapping_form"):
                         manual_selections = []
-                        # Stretched layout to fit the new Debug column
                         h1, h2, h3, h4, h5, h6 = st.columns([1, 1.5, 0.5, 1, 2.5, 2])
                         h1.write("**Bill No**")
                         h2.write("**Billed Description**")
                         h3.write("**Qty**")
                         h4.write("**Unit**")
-                        h5.write("**🤖 AI Reasoning**")
+                        h5.write("**AI Reasoning**")
                         h6.write("**Match to Master Product**")
                         st.divider()
                         
@@ -497,7 +499,7 @@ with tab4:
                             with c2: st.write(un_row['Original Billed Data'])
                             with c3: st.write(un_row['Qty'])
                             with c4: st.write(un_row.get('Unit Check', '-'))
-                            with c5: st.caption(un_row.get('🤖 AI Reasoning', '-'))
+                            with c5: st.caption(un_row.get('AI Reasoning', '-'))
                             with c6:
                                 selected = st.selectbox("Match", options=["-- Skip / Do Not Import --"] + stock_items, key=f"un_{idx}", label_visibility="collapsed")
                             manual_selections.append((un_row, selected))
@@ -515,13 +517,13 @@ with tab4:
                                     item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
                                     
                                     final_records_to_commit.append({
-                                        "Date": row['Date'], 
-                                        "Bill Number": row['Bill Number'], 
+                                        "Date": orig_row['Date'], 
+                                        "Bill Number": orig_row['Bill Number'], 
                                         "Group": item_details['Group'], 
                                         "Item_Name": current_item,
                                         "Purchase Qty": 0, 
                                         "Purchase Unit": "-", 
-                                        "Stock Qty Added": row['Stock Qty Added'], 
+                                        "Stock Qty Added": orig_row['Stock Qty Added'], 
                                         "Stock Unit": item_details['Sales_Unit']
                                     })
                                     
@@ -567,13 +569,13 @@ with tab4:
                                 item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
                                 
                                 final_records_to_commit.append({
-                                    "Date": row['Date'], 
-                                    "Bill Number": row['Bill Number'], 
+                                    "Date": orig_row['Date'], 
+                                    "Bill Number": orig_row['Bill Number'], 
                                     "Group": item_details['Group'], 
                                     "Item_Name": current_item,
                                     "Purchase Qty": 0, 
                                     "Purchase Unit": "-", 
-                                    "Stock Qty Added": row['Stock Qty Added'], 
+                                    "Stock Qty Added": orig_row['Stock Qty Added'], 
                                     "Stock Unit": item_details['Sales_Unit']
                                 })
                                 
