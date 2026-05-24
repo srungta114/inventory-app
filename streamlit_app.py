@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime
 from difflib import get_close_matches
 import re
+import io # <-- NEW: Required for generating Excel files in memory
 
 st.set_page_config(page_title="Hardware Inventory", layout="wide", page_icon="📦")
 
@@ -458,10 +459,25 @@ with tab4:
                 # --- Editable Auto-Matched DataFrame ---
                 if auto_matched:
                     st.success(f"✅ Automatically matched {len(auto_matched)} items.")
-                    st.write("✏️ **Review and override any incorrect automatic matches below:**")
                     
                     # Drop DB clutter columns so 'AI Reasoning' fits perfectly on screen
                     display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc', 'Group', 'Purchase Qty', 'Purchase Unit', 'Stock Qty Added', 'Stock Unit'], errors='ignore')
+                    
+                    # --- NEW: Download to Excel Feature ---
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        display_df.to_excel(writer, index=False, sheet_name='Auto_Matched')
+                    buffer.seek(0)
+
+                    st.download_button(
+                        label="📥 Download Auto-Matched as Excel",
+                        data=buffer,
+                        file_name=f"AutoMatched_{datetime.now().strftime('%d-%m-%Y')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    # --------------------------------------
+
+                    st.write("✏️ **Review and override any incorrect automatic matches below:**")
                     
                     edited_auto_df = st.data_editor(
                         display_df,
