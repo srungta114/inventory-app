@@ -62,26 +62,21 @@ if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matc
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
-# --- REWORKED STRICT WORD-BY-WORD AI LOGIC ---
+# --- REWORKED WORD-BY-WORD AI LOGIC (Lenient) ---
 def find_best_match(description):
     # 1. Pre-process and Apply Parameter Rules FIRST
     desc_lower = str(description).strip().lower()
     
     # Rule 1: 'red' -> 'maroon'
     desc_lower = re.sub(r'\bred\b', 'maroon', desc_lower)
-    
     # Rule 4: MS SQ/SQUARE ROD -> SQUARE ROD
     desc_lower = re.sub(r'\bms\s+(sq|square)\s+rod\b', 'square rod', desc_lower)
-    
     # Rule 5: MS PLAIN ROD -> PLAIN ROD
     desc_lower = re.sub(r'\bms\s+plain\s+rod\b', 'plain rod', desc_lower)
-    
     # Rule 6: MS SQ PIPE -> SQUARE PIPE
     desc_lower = re.sub(r'\bms\s+(sq|square)\s+pipe\b', 'square pipe', desc_lower)
-    
     # Rule 7: FIBRE CORRUGATED SHEET -> FIBRE JASTA
     desc_lower = re.sub(r'\bfibre\s+corrugated\s+sheet\b', 'fibre jasta', desc_lower)
-    
     # Rule 2: MS + ROUND + PIPE -> BLACK PIPE
     if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
         desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
@@ -99,7 +94,7 @@ def find_best_match(description):
     candidate_items = {k: v for k, v in stock_items_lower.items() 
                        if bool(re.search(r'\bhulas\b', k)) == has_hulas}
 
-    # 4. Extract all words and strictly score the entire product master
+    # 4. Extract all words and score the product master
     best_match = None
     highest_score = 0
     desc_words = set(desc_lower.split())
@@ -120,10 +115,10 @@ def find_best_match(description):
         for d_word in desc_words:
             if d_word in key_words:
                 score += 1 # Exact word match
-            elif get_close_matches(d_word, key_words, n=1, cutoff=0.8):
-                score += 0.8 # Fuzzy word match (min 80% similarity required)
+            elif get_close_matches(d_word, key_words, n=1, cutoff=0.6):
+                score += 0.8 # Lenient fuzzy word match
         
-        # Calculate Strict Ratio: Total score / Max words between the two strings
+        # Calculate Ratio
         denominator = max(len(key_words), len(desc_words))
         match_ratio = score / denominator if denominator > 0 else 0
         
@@ -131,8 +126,8 @@ def find_best_match(description):
             highest_score = match_ratio
             best_match = val
             
-    # 5. Only pass if the absolute highest ratio is 80% or more, else send to manual review
-    if highest_score >= 0.8:
+    # 5. Take the highest score (as long as it's not a complete mismatch)
+    if highest_score >= 0.3:
         return best_match
         
     return None
