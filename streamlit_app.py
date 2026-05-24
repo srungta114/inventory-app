@@ -13,7 +13,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def save_purchases(df_to_save):
     df_save = df_to_save.copy()
     if 'Date' in df_save.columns:
-        # This guarantees that regardless of how it was typed/uploaded, it saves as DD/MM/YYYY
         df_save['Date'] = pd.to_datetime(df_save['Date'], dayfirst=True, errors='coerce').dt.strftime('%d/%m/%Y')
     conn.update(worksheet="Purchases", data=df_save)
 
@@ -30,7 +29,7 @@ def get_code_mapping():
     try:
         return conn.read(worksheet="Code_Mapping")
     except:
-        return pd.DataFrame(columns=["Item Code", "Item Name"])
+        return pd.DataFrame(columns=["Item Code", "Item Name", "Units"])
 
 @st.cache_data(ttl=10)
 def get_learned_mappings():
@@ -44,12 +43,17 @@ purchases_df = get_purchases()
 mapping_df = get_code_mapping()
 learned_df = get_learned_mappings()
 
-# 1. Create the Product Code translation dictionary
+# 1. Create the Product Code & Unit translation dictionaries
 code_dict = {}
-if not mapping_df.empty and 'Item Code' in mapping_df.columns and 'Item Name' in mapping_df.columns:
-    code_dict = dict(zip(mapping_df['Item Code'].astype(str).str.strip(), mapping_df['Item Name'].astype(str).str.strip()))
+unit_dict = {}
+if not mapping_df.empty:
+    if len(mapping_df.columns) >= 2:
+        code_dict = dict(zip(mapping_df.iloc[:, 0].astype(str).str.strip(), mapping_df.iloc[:, 1].astype(str).str.strip()))
+    if len(mapping_df.columns) >= 3:
+        # Grabs the 3rd column for the Stock Keeping Unit (SKU) Check
+        unit_dict = dict(zip(mapping_df.iloc[:, 0].astype(str).str.strip(), mapping_df.iloc[:, 2].astype(str).str.strip()))
 
-# 2. Create the AI Memory dictionary (Standardized to UPPERCASE to prevent dupes)
+# 2. Create the AI Memory dictionary
 memory_dict = {}
 if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matched_Item_Name' in learned_df.columns:
     memory_dict = dict(zip(learned_df['Billed_Description'].astype(str).str.strip().str.upper(), learned_df['Matched_Item_Name'].astype(str).str.strip()))
@@ -59,20 +63,15 @@ stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
 def find_best_match(description):
-    # Standardize incoming description
     desc_clean_upper = str(description).strip().upper()
-    
-    # Step 1. Check AI Memory Bank First
     if desc_clean_upper in memory_dict:
         return memory_dict[desc_clean_upper]
     
-    # Step 2. Direct Substring Match
     desc_lower = str(description).strip().lower()
     for key, val in stock_items_lower.items():
         if desc_lower in key or key in desc_lower:
             return val
             
-    # Step 3. Fuzzy Match Algorithm
     matches = get_close_matches(desc_lower, stock_items_lower.keys(), n=1, cutoff=0.5)
     if matches:
         return stock_items_lower[matches[0]]
@@ -151,7 +150,6 @@ with tab2:
         
         if ledger_item:
             ledger = purchases_df[purchases_df['Item_Name'] == ledger_item].copy()
-            # Parse dates safely to sort them chronologically
             ledger['Date_Parsed'] = pd.to_datetime(ledger['Date'], dayfirst=True, errors='coerce')
             ledger = ledger.sort_values('Date_Parsed')
             ledger['Running Balance'] = ledger['Stock Qty Added'].cumsum()
@@ -193,7 +191,6 @@ with tab4:
     
     if uploaded_file is not None:
         
-        # --- Check if this exact file was ALREADY successfully saved to prevent infinite loops ---
         if st.session_state.get("committed_file_name") == uploaded_file.name:
             st.success("🎉 Database updated successfully! Please clear the file above (click the 'X') to upload a new one.")
         else:
@@ -260,7 +257,7 @@ with tab4:
                         st.session_state.resolving_duplicates = False
                         st.rerun()
 
-            # 3. FUZZY MATCHING (Runs after duplicates are resolved)
+            # 3. FUZZY MATCHING & UNIT COMPARISON
             if not st.session_state.get("resolving_duplicates", False) and "auto_matched" not in st.session_state and "df_to_process" in st.session_state:
                 df_to_process = st.session_state.df_to_process
                 auto_matched_records = []
@@ -271,13 +268,25 @@ with tab4:
                     bill_val = str(row[1]).strip()
                     qty_val = float(row[2])
                     
-                    raw_item_code = str(row[4]).strip() if pd.notna(row[4]) else ""
-                    other_desc = str(row[5]).strip() if pd.notna(row[5]) else ""
+                    # --- NEW: Extract Sales Unit from Column 10 (index 9) safely ---
+                    sales_unit = str(row[9]).strip() if len(row) > 9 and pd.notna(row[9]) else ""
+                    raw_item_code = str(row[4]).strip() if len(row) > 4 and pd.notna(row[4]) else ""
+                    other_desc = str(row[5]).strip() if len(row) > 5 and pd.notna(row[5]) else ""
                     
-                    # Translate code to mapped name
                     mapped_name = code_dict.get(raw_item_code, raw_item_code)
+                    sku_unit = unit_dict.get(raw_item_code, "")
                     
-                    # Ensure the combination uses the newly mapped name + description
+                    # Create the Unit Validation String
+                    if sales_unit and sku_unit:
+                        if sales_unit.lower() == sku_unit.lower():
+                            unit_check = f"✅ {sales_unit}"
+                        else:
+                            unit_check = f"⚠️ File: {sales_unit} | SKU: {sku_unit}"
+                    else:
+                        unit_check = f"{sales_unit}" if sales_unit else f"{sku_unit}"
+                    
+                    raw_combo = f"{raw_item_code} - {other_desc}".strip(" -")
+                    
                     if mapped_name and mapped_name.lower() != 'nan':
                         merged_description = f"{mapped_name} - {other_desc}".strip(" -")
                     else:
@@ -296,7 +305,8 @@ with tab4:
                             "Purchase Unit": "-", 
                             "Stock Qty Added": -abs(qty_val), 
                             "Stock Unit": item_details['Sales_Unit'], 
-                            "Original Billed Data": merged_description,  # CHANGED to show Mapped Name instead of Raw Code
+                            "Original Billed Data": merged_description,
+                            "Unit Check": unit_check, 
                             "Display_Desc": merged_description
                         })
                     else:
@@ -305,7 +315,8 @@ with tab4:
                             "Bill Number": bill_val, 
                             "Qty": qty_val, 
                             "Description": merged_description,
-                            "Original Billed Data": merged_description   # CHANGED to show Mapped Name instead of Raw Code
+                            "Original Billed Data": merged_description,
+                            "Unit Check": unit_check 
                         })
                 
                 st.session_state.auto_matched = auto_matched_records
@@ -319,7 +330,7 @@ with tab4:
                 
                 if auto_matched:
                     st.success(f"✅ Automatically matched {len(auto_matched)} items.")
-                    # Show the Original Billed Data, but hide the internal logic field Display_Desc
+                    # Show Original Billed Data & Unit Check, hide the internal parsing column
                     display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc'], errors='ignore')
                     with st.expander("View Auto-Matched Items"):
                         st.dataframe(display_df, use_container_width=True)
@@ -328,8 +339,8 @@ with tab4:
                 
                 # --- Unified Safe Commit Function ---
                 def commit_sales_to_db(new_learned=None):
-                    # Filter out the visual/temporary columns before saving to the DB
-                    clean_records = [{k: v for k, v in r.items() if k not in ['Display_Desc', 'Original Billed Data']} for r in final_records_to_commit]
+                    # Filter out visual/temporary columns before saving to the DB to keep it clean
+                    clean_records = [{k: v for k, v in r.items() if k not in ['Display_Desc', 'Original Billed Data', 'Unit Check']} for r in final_records_to_commit]
                     new_records_df = pd.DataFrame(clean_records)
                     
                     current_purchases = purchases_df.copy()
@@ -366,19 +377,21 @@ with tab4:
                     st.warning(f"⚠️ {len(unmatched)} items could not be matched automatically.")
                     with st.form("manual_mapping_form"):
                         manual_selections = []
-                        h1, h2, h3, h4 = st.columns([1, 2, 1, 3])
+                        h1, h2, h3, h4, h5 = st.columns([1, 2, 0.8, 1.2, 2.5])
                         h1.write("**Bill No**")
                         h2.write("**Billed Description**")
                         h3.write("**Qty**")
-                        h4.write("**Match to Master Product**")
+                        h4.write("**Unit Check**")
+                        h5.write("**Match to Master Product**")
                         st.divider()
                         
                         for idx, un_row in enumerate(unmatched):
-                            c1, c2, c3, c4 = st.columns([1, 2, 1, 3])
+                            c1, c2, c3, c4, c5 = st.columns([1, 2, 0.8, 1.2, 2.5])
                             with c1: st.write(un_row['Bill Number'])
                             with c2: st.write(un_row['Original Billed Data'])
                             with c3: st.write(un_row['Qty'])
-                            with c4:
+                            with c4: st.write(un_row.get('Unit Check', '-'))
+                            with c5:
                                 selected = st.selectbox("Match", options=["-- Skip / Do Not Import --"] + stock_items, key=f"un_{idx}", label_visibility="collapsed")
                             manual_selections.append((un_row, selected))
                             
@@ -400,6 +413,7 @@ with tab4:
                                         "Stock Qty Added": -abs(un_row['Qty']), 
                                         "Stock Unit": item_details['Sales_Unit'], 
                                         "Original Billed Data": un_row['Original Billed Data'], 
+                                        "Unit Check": un_row.get('Unit Check', ''),
                                         "Display_Desc": un_row['Description']
                                     })
                                     
