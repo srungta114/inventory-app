@@ -3,6 +3,7 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 from difflib import get_close_matches
+import re
 
 st.set_page_config(page_title="Hardware Inventory", layout="wide", page_icon="📦")
 
@@ -61,17 +62,71 @@ if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matc
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
+# --- ADVANCED WORD-BY-WORD FUZZY AI LOGIC ---
 def find_best_match(description):
+    # Step 1: Check AI Memory Bank First (Exact Override)
     desc_clean_upper = str(description).strip().upper()
     if desc_clean_upper in memory_dict:
         return memory_dict[desc_clean_upper]
     
+    # Pre-process the string
     desc_lower = str(description).strip().lower()
+    
+    # Step 2: Custom Parameter Rules
+    # Rule 1: If 'red' is mentioned, swap to 'maroon'
+    desc_lower = re.sub(r'\bred\b', 'maroon', desc_lower)
+    
+    # Rule 4: MS SQ ROD -> SQUARE ROD
+    desc_lower = re.sub(r'\bms\s+sq\s+rod\b', 'square rod', desc_lower)
+    desc_lower = re.sub(r'\bms\s+square\s+rod\b', 'square rod', desc_lower)
+    
+    # Rule 5: MS PLAIN ROD -> PLAIN ROD
+    desc_lower = re.sub(r'\bms\s+plain\s+rod\b', 'plain rod', desc_lower)
+    
+    # Rule 2: If 'ms' AND 'round' AND 'pipe' are ALL mentioned, swap to 'black pipe'
+    if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
+        desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
+        desc_lower = re.sub(r'\bround\b', '', desc_lower)
+        desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
+        desc_lower = " ".join(desc_lower.split()) # Clean up extra spaces
+    
+    # Step 3: Direct Substring Match (Whole String)
     for key, val in stock_items_lower.items():
         if desc_lower in key or key in desc_lower:
             return val
             
-    matches = get_close_matches(desc_lower, stock_items_lower.keys(), n=1, cutoff=0.5)
+    # Step 4: Word-by-Word Matrix Scoring
+    best_match = None
+    highest_score = 0
+    desc_words = set(desc_lower.split())
+    
+    if desc_words:
+        for key, val in stock_items_lower.items():
+            key_words = set(key.split())
+            score = 0
+            
+            # Compare each word in description against words in the master item
+            for d_word in desc_words:
+                if d_word in key_words:
+                    score += 1 # Exact word match
+                else:
+                    # Fuzzy match the individual word (allows for minor spelling errors)
+                    if get_close_matches(d_word, key_words, n=1, cutoff=0.7):
+                        score += 0.7 
+            
+            # Normalize the score by the length to penalize vastly different string lengths
+            match_ratio = score / max(len(desc_words), len(key_words))
+            
+            if match_ratio > highest_score:
+                highest_score = match_ratio
+                best_match = val
+        
+        # If the word-by-word algorithm found a reasonable match (>= 40% confidence)
+        if highest_score >= 0.4:
+            return best_match
+            
+    # Step 5: Absolute Fallback (Standard Fuzzy Match on the whole string)
+    matches = get_close_matches(desc_lower, stock_items_lower.keys(), n=1, cutoff=0.4)
     if matches:
         return stock_items_lower[matches[0]]
         
@@ -323,7 +378,7 @@ with tab4:
                 auto_matched = st.session_state.auto_matched
                 unmatched = st.session_state.unmatched
                 
-                # --- NEW: Unified Safe Commit Function taking processed records ---
+                # --- Unified Safe Commit Function taking processed records ---
                 def commit_sales_to_db(records_to_save, new_learned=None):
                     new_records_df = pd.DataFrame(records_to_save)
                     current_purchases = purchases_df.copy()
@@ -356,13 +411,12 @@ with tab4:
                             
                     st.rerun()
 
-                # --- NEW: Editable Auto-Matched DataFrame ---
+                # --- Editable Auto-Matched DataFrame ---
                 if auto_matched:
                     st.success(f"✅ Automatically matched {len(auto_matched)} items.")
                     st.write("✏️ **Review and override any incorrect automatic matches below:**")
                     display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc'], errors='ignore')
                     
-                    # Convert to data editor so the user can change Item_Name
                     edited_auto_df = st.data_editor(
                         display_df,
                         column_config={
@@ -424,7 +478,6 @@ with tab4:
                                         "Stock Unit": item_details['Sales_Unit']
                                     })
                                     
-                                    # Memorize if user changed it
                                     if current_item != orig_row['Item_Name']:
                                         new_learned_rules.append({
                                             "Billed_Description": str(orig_row['Display_Desc']).strip().upper(),
@@ -477,7 +530,6 @@ with tab4:
                                     "Stock Unit": item_details['Sales_Unit']
                                 })
                                 
-                                # Memorize if user changed it
                                 if current_item != orig_row['Item_Name']:
                                     new_learned_rules.append({
                                         "Billed_Description": str(orig_row['Display_Desc']).strip().upper(),
