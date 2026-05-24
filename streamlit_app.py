@@ -73,52 +73,66 @@ def find_best_match(description):
     desc_lower = str(description).strip().lower()
     
     # Step 2: Custom Parameter Rules
+    # Rule 1: If 'red' is mentioned, swap to 'maroon'
     desc_lower = re.sub(r'\bred\b', 'maroon', desc_lower)
+    
+    # Rule 4: MS SQ ROD -> SQUARE ROD
     desc_lower = re.sub(r'\bms\s+sq\s+rod\b', 'square rod', desc_lower)
     desc_lower = re.sub(r'\bms\s+square\s+rod\b', 'square rod', desc_lower)
+    
+    # Rule 5: MS PLAIN ROD -> PLAIN ROD
     desc_lower = re.sub(r'\bms\s+plain\s+rod\b', 'plain rod', desc_lower)
+    
+    # Rule 6: MS SQ PIPE -> SQUARE PIPE
     desc_lower = re.sub(r'\bms\s+sq\s+pipe\b', 'square pipe', desc_lower)
     desc_lower = re.sub(r'\bms\s+square\s+pipe\b', 'square pipe', desc_lower)
+
+    # Rule 7: FIBRE CORRUGATED SHEET -> FIBRE JASTA
     desc_lower = re.sub(r'\bfibre\s+corrugated\s+sheet\b', 'fibre jasta', desc_lower)
     
+    # Rule 2: If 'ms' AND 'round' AND 'pipe' are ALL mentioned, swap to 'black pipe'
     if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
         desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
         desc_lower = re.sub(r'\bround\b', '', desc_lower)
         desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
-        desc_lower = " ".join(desc_lower.split())
+        desc_lower = " ".join(desc_lower.split()) # Clean up extra spaces
 
-    # --- NEW STEP 3 & 4: ENTIRE LIST SCORING ---
+    # --- NEW RULE 8: STRICT HULAS MATCHING ---
+    # Filter candidate list so 'hulas' items only match with 'hulas' descriptions
+    has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
+    candidate_items = {}
+    for key, val in stock_items_lower.items():
+        key_has_hulas = bool(re.search(r'\bhulas\b', key))
+        if has_hulas == key_has_hulas:
+            candidate_items[key] = val
+    
+    # Step 3: Direct Substring Match (Whole String)
+    for key, val in candidate_items.items():
+        if desc_lower == key:
+            return val
+            
+        if desc_lower in key or key in desc_lower:
+            # Quick exact substring check
+            return val
+            
+    # Step 4: Word-by-Word Matrix Scoring
     best_match = None
     highest_score = 0
     desc_words = set(desc_lower.split())
     
-    for key, val in stock_items_lower.items():
-        # 1. Check for Absolute Exact Match First (Score: 2.0)
-        if desc_lower == key:
-            return val 
-            
-        # 2. Check for Substring Match (e.g. "Pipe" is inside "MS Pipe") (Score: 1.5)
-        # We penalize it slightly based on how much extra text there is, so the closest substring wins
-        if desc_lower in key or key in desc_lower:
-            length_diff = abs(len(desc_lower) - len(key))
-            sub_score = 1.5 - (length_diff * 0.01) # Closer in length = higher score
-            if sub_score > highest_score:
-                highest_score = sub_score
-                best_match = val
-                continue
-                
-        # 3. Word-by-Word Matrix Scoring (Score: 0.0 to 1.0)
-        if desc_words:
+    if desc_words:
+        for key, val in candidate_items.items():
             key_words = set(key.split())
             if not key_words: continue
             
             score = 0
             for d_word in desc_words:
                 if d_word in key_words:
-                    score += 1 
+                    score += 1 # Exact word match
                 elif get_close_matches(d_word, key_words, n=1, cutoff=0.8):
-                    score += 0.8 
+                    score += 0.8 # Fuzzy matched word
             
+            # Forgive 1 extra word in the billed description
             effective_desc_len = len(desc_words)
             if len(desc_words) > len(key_words):
                 effective_desc_len -= 1  
@@ -129,17 +143,18 @@ def find_best_match(description):
             if match_ratio > highest_score:
                 highest_score = match_ratio
                 best_match = val
-
-    # If ANY of the methods above found a match with at least 80% confidence, return the absolute best one
-    if highest_score >= 0.8:
-        return best_match
+        
+        # Word-by-word algorithm requires a strict minimum 80% confidence
+        if highest_score >= 0.8:
+            return best_match
             
     # Step 5: Absolute Fallback (Standard Fuzzy Match on the whole string, strict 80% cutoff)
-    matches = get_close_matches(desc_lower, stock_items_lower.keys(), n=1, cutoff=0.8)
+    matches = get_close_matches(desc_lower, candidate_items.keys(), n=1, cutoff=0.8)
     if matches:
-        return stock_items_lower[matches[0]]
+        return candidate_items[matches[0]]
         
     return None
+
 st.title("📦 Hardware Inventory Management")
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🛒 Record Purchase", "📊 View Inventory", "📋 Masters & AI Memory", "📤 Bulk Upload Sales", "📝 Edit Purchase Bills", "📝 Edit Sales Bills"
