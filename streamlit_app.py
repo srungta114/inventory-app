@@ -97,7 +97,7 @@ def find_best_match(description):
         desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
         desc_lower = " ".join(desc_lower.split()) # Clean up extra spaces
 
-    # --- NEW RULE 8: STRICT HULAS MATCHING ---
+    # --- RULE 8: STRICT HULAS MATCHING ---
     # Filter candidate list so 'hulas' items only match with 'hulas' descriptions
     has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
     candidate_items = {}
@@ -132,12 +132,8 @@ def find_best_match(description):
                 elif get_close_matches(d_word, key_words, n=1, cutoff=0.8):
                     score += 0.8 # Fuzzy matched word
             
-            # Forgive 1 extra word in the billed description
-            effective_desc_len = len(desc_words)
-            if len(desc_words) > len(key_words):
-                effective_desc_len -= 1  
-                
-            denominator = max(len(key_words), effective_desc_len)
+            # STRICT matching: No forgiving extra words
+            denominator = max(len(key_words), len(desc_words))
             match_ratio = score / denominator if denominator > 0 else 0
             
             if match_ratio > highest_score:
