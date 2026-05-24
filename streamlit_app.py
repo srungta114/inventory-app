@@ -62,95 +62,65 @@ if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matc
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
-# --- ADVANCED WORD-BY-WORD FUZZY AI LOGIC ---
+# --- CORRECTED ADVANCED WORD-BY-WORD FUZZY AI LOGIC ---
 def find_best_match(description):
-    # Step 1: Check AI Memory Bank First (Exact Override)
-    desc_clean_upper = str(description).strip().upper()
-    if desc_clean_upper in memory_dict:
-        return memory_dict[desc_clean_upper]
-    
-    # Pre-process the string
+    # 1. Pre-process and Apply Rules FIRST (Before any matching)
     desc_lower = str(description).strip().lower()
     
-    # Step 2: Custom Parameter Rules
-    # Rule 1: If 'red' is mentioned, swap to 'maroon'
+    # Rule 1: 'red' -> 'maroon'
     desc_lower = re.sub(r'\bred\b', 'maroon', desc_lower)
     
-    # Rule 4: MS SQ ROD -> SQUARE ROD
-    desc_lower = re.sub(r'\bms\s+sq\s+rod\b', 'square rod', desc_lower)
-    desc_lower = re.sub(r'\bms\s+square\s+rod\b', 'square rod', desc_lower)
+    # Rule 4: MS SQ/SQUARE ROD -> SQUARE ROD
+    desc_lower = re.sub(r'\bms\s+(sq|square)\s+rod\b', 'square rod', desc_lower)
     
     # Rule 5: MS PLAIN ROD -> PLAIN ROD
     desc_lower = re.sub(r'\bms\s+plain\s+rod\b', 'plain rod', desc_lower)
     
     # Rule 6: MS SQ PIPE -> SQUARE PIPE
-    desc_lower = re.sub(r'\bms\s+sq\s+pipe\b', 'square pipe', desc_lower)
-    desc_lower = re.sub(r'\bms\s+square\s+pipe\b', 'square pipe', desc_lower)
-
+    desc_lower = re.sub(r'\bms\s+(sq|square)\s+pipe\b', 'square pipe', desc_lower)
+    
     # Rule 7: FIBRE CORRUGATED SHEET -> FIBRE JASTA
     desc_lower = re.sub(r'\bfibre\s+corrugated\s+sheet\b', 'fibre jasta', desc_lower)
     
-    # Rule 2: If 'ms' AND 'round' AND 'pipe' are ALL mentioned, swap to 'black pipe'
+    # Rule 2: MS + ROUND + PIPE -> BLACK PIPE
     if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
-        desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
-        desc_lower = re.sub(r'\bround\b', '', desc_lower)
-        desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
-        desc_lower = " ".join(desc_lower.split()) # Clean up extra spaces
+        desc_lower = 'black pipe'
 
-    # --- RULE 8: STRICT HULAS MATCHING ---
-    # Filter candidate list so 'hulas' items only match with 'hulas' descriptions
+    # 2. AI Memory Bank (Exact Override)
+    desc_clean_upper = desc_lower.upper()
+    if desc_clean_upper in memory_dict:
+        return memory_dict[desc_clean_upper]
+
+    # 3. Rule 8: STRICT HULAS MATCHING (Brand Isolation)
     has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
-    candidate_items = {}
-    for key, val in stock_items_lower.items():
-        key_has_hulas = bool(re.search(r'\bhulas\b', key))
-        if has_hulas == key_has_hulas:
-            candidate_items[key] = val
-    
-    # Step 3: Direct Substring Match (Whole String)
-    for key, val in candidate_items.items():
-        if desc_lower == key:
-            return val
-            
-        if desc_lower in key or key in desc_lower:
-            # Quick exact substring check
-            return val
-            
-    # Step 4: Word-by-Word Matrix Scoring
+    # Filter candidates: If input has Hulas, only allow Master items with Hulas
+    candidate_items = {k: v for k, v in stock_items_lower.items() 
+                       if bool(re.search(r'\bhulas\b', k)) == has_hulas}
+
+    # 4. Scoring Algorithm (Word-by-word)
     best_match = None
     highest_score = 0
     desc_words = set(desc_lower.split())
     
-    if desc_words:
-        for key, val in candidate_items.items():
-            key_words = set(key.split())
-            if not key_words: continue
-            
-            score = 0
-            for d_word in desc_words:
-                if d_word in key_words:
-                    score += 1 # Exact word match
-                elif get_close_matches(d_word, key_words, n=1, cutoff=0.8):
-                    score += 0.8 # Fuzzy matched word
-            
-            # STRICT matching: No forgiving extra words
-            denominator = max(len(key_words), len(desc_words))
-            match_ratio = score / denominator if denominator > 0 else 0
-            
-            if match_ratio > highest_score:
-                highest_score = match_ratio
-                best_match = val
+    for key, val in candidate_items.items():
+        key_words = set(key.split())
+        if not key_words: continue
         
-        # Word-by-word algorithm requires a strict minimum 80% confidence
-        if highest_score >= 0.8:
-            return best_match
+        # Exact match bonus
+        if desc_lower == key: return val
             
-    # Step 5: Absolute Fallback (Standard Fuzzy Match on the whole string, strict 80% cutoff)
-    matches = get_close_matches(desc_lower, candidate_items.keys(), n=1, cutoff=0.8)
-    if matches:
-        return candidate_items[matches[0]]
+        # Scoring
+        score = sum(1 for w in desc_words if w in key_words)
+        score += sum(0.8 for w in desc_words if w not in key_words and get_close_matches(w, key_words, n=1, cutoff=0.8))
         
-    return None
-
+        denominator = max(len(key_words), len(desc_words))
+        match_ratio = score / denominator if denominator > 0 else 0
+        
+        if match_ratio > highest_score:
+            highest_score = match_ratio
+            best_match = val
+            
+    return best_match if highest_score >= 0.8 else None
 st.title("📦 Hardware Inventory Management")
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🛒 Record Purchase", "📊 View Inventory", "📋 Masters & AI Memory", "📤 Bulk Upload Sales", "📝 Edit Purchase Bills", "📝 Edit Sales Bills"
