@@ -1,10 +1,3 @@
-Here is the **complete, finalized code**.
-
-I have replaced the `find_best_match` function in your provided code with the fully reworked AI logic from the previous step. It now rigorously extracts every word, scores them against the entire master list, strictly enforces the 80% confidence threshold, and safely drops anything lower into the manual matching bucket.
-
-Copy this entire block and overwrite your `app.py` file on GitHub:
-
-```python
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
@@ -599,5 +592,3 @@ with tab5:
     bill_editor(is_purchase=True, suffix="pur")
 with tab6:
     bill_editor(is_purchase=False, suffix="sal")
-
-```
