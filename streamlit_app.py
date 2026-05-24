@@ -63,143 +63,78 @@ if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matc
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
-# --- REWORKED AI LOGIC WITH STRICT ISOLATION & DEBUGGING ---
+# --- REWORKED ROBUST AI LOGIC ---
 def find_best_match(description):
     debug_log = {"Original": str(description)}
     
-    # 1. Pre-process and Apply Parameter Rules FIRST
+    # 1. Pre-process and Normalize
     desc_lower = str(description).strip().lower()
     
+    # Normalize fractions and inches
+    # Convert '1 1/2' to '1.5'
+    desc_lower = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), desc_lower)
+    desc_lower = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), desc_lower)
+    # Remove inch quotes
+    desc_lower = desc_lower.replace('"', ' inch').replace("'", ' feet')
+    
+    # Apply Parameter Rules
     desc_lower = re.sub(r'\bred\b', 'maroon', desc_lower)
     desc_lower = re.sub(r'\bms\s+(sq|square)\s+rod\b', 'square rod', desc_lower)
     desc_lower = re.sub(r'\bms\s+plain\s+rod\b', 'plain rod', desc_lower)
     desc_lower = re.sub(r'\bms\s+(sq|square)\s+pipe\b', 'square pipe', desc_lower)
     desc_lower = re.sub(r'\bfibre\s+corrugated\s+sheet\b', 'fibre jasta', desc_lower)
     
+    # Updated Rule 2: MS + ROUND + PIPE (Strict pattern matching)
+    # This catches "ms round pipe", "ms-round-pipe", "ms round pipe", etc.
     if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
-        desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
-        desc_lower = re.sub(r'\bround\b', '', desc_lower)
-        desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
-        desc_lower = " ".join(desc_lower.split()) 
+        desc_lower = 'black pipe'
         
     debug_log["Cleaned"] = desc_lower
 
     # 2. AI Memory Bank Check
-    desc_clean_upper = desc_lower.upper()
-    if desc_clean_upper in memory_dict:
+    if desc_lower.upper() in memory_dict:
         debug_log["Status"] = "Memory Match"
-        return memory_dict[desc_clean_upper], debug_log
+        return memory_dict[desc_lower.upper()], debug_log
 
-    # 3. STRICT ISOLATION FILTERS
-    # These keywords strictly isolate the database. 
-    # If a keyword is IN the input, only items with it are checked.
-    # If a keyword is NOT IN the input, items with it are strictly ignored.
-    strict_keywords = [
-        "maroon", 
-        "square rod", 
-        "plain rod", 
-        "square pipe", 
-        "fibre jasta", 
-        "black pipe", 
-        "hulas"
-    ]
-    
-    candidate_items = stock_items_lower.copy()
-    triggered_locks = []
-    
-    for kw in strict_keywords:
-        has_kw = bool(re.search(rf'\b{kw}\b', desc_lower))
-        if has_kw:
-            triggered_locks.append(kw)
-        
-        # Filter candidate items based on strict agreement
-        candidate_items = {
-            k: v for k, v in candidate_items.items() 
-            if bool(re.search(rf'\b{kw}\b', k)) == has_kw
-        }
-        
-    debug_log["Strict_Locks"] = triggered_locks
+    # 3. Rule 8: STRICT HULAS MATCHING
+    has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
+    candidate_items = {k: v for k, v in stock_items_lower.items() if bool(re.search(r'\bhulas\b', k)) == has_hulas}
 
-    # 4. Extract all words and score
+    # 4. Scoring Algorithm (Tokenized)
     best_match = None
     highest_score = 0
     desc_words = set(desc_lower.split())
     
-    if not desc_words:
-        debug_log["Status"] = "Empty String"
-        return None, debug_log
-    
     scoring_details = []
     
     for key, val in candidate_items.items():
+        # Normalize key for comparison
+        clean_key = key.replace('"', ' inch').replace("'", ' feet')
+        key_words = set(clean_key.split())
+        
         if desc_lower == key: 
-            debug_log["Status"] = "Exact Match"
-            return val, debug_log
-            
-        key_words = set(key.split())
-        if not key_words: continue
+            return val, {"Status": "Exact Match"}
         
         score = 0
-        exact_matches = []
-        fuzzy_matches = []
-        
+        # Weights: Exact Word = 1.0, Fuzzy Word = 0.7
         for d_word in desc_words:
             if d_word in key_words:
                 score += 1 
-                exact_matches.append(d_word)
-            else:
-                fuzzy = get_close_matches(d_word, key_words, n=1, cutoff=0.6)
-                if fuzzy:
-                    score += 0.8
-                    fuzzy_matches.append(f"{d_word}->{fuzzy[0]}")
+            elif get_close_matches(d_word, key_words, n=1, cutoff=0.8):
+                score += 0.7 
         
+        # Scored Ratio
         denominator = max(len(key_words), len(desc_words))
         match_ratio = score / denominator if denominator > 0 else 0
         
-        if match_ratio > 0:
-            scoring_details.append({
-                "Item": val,
-                "Ratio": round(match_ratio, 2),
-                "Exact": exact_matches,
-                "Fuzzy": fuzzy_matches
-            })
-            
         if match_ratio > highest_score:
             highest_score = match_ratio
             best_match = val
             
-    # Sort and store top 3 scores for debugging
-    scoring_details = sorted(scoring_details, key=lambda x: x["Ratio"], reverse=True)[:3]
-    debug_log["Top_Scorers"] = scoring_details
-            
-    if highest_score >= 0.3:
-        debug_log["Status"] = "Fuzzy Passed"
-        return best_match, debug_log
-        
-    debug_log["Status"] = "Failed (Score < 0.3)"
-    return None, debug_log
-
-def format_debug_string(log):
-    if log.get("Status") in ["Memory Match", "Exact Match"]:
-        return f"🟢 {log['Status']}"
+    debug_log["Status"] = "Score Calculated"
+    debug_log["Highest_Score"] = highest_score
     
-    locks = log.get('Strict_Locks', [])
-    lock_str = f"🔒 Locks: {locks}" if locks else "🔓 Locks: None"
-    
-    res = f"Cleaned: '{log.get('Cleaned', '')}' | {lock_str} | "
-    scorers = log.get("Top_Scorers", [])
-    
-    if scorers:
-        top = scorers[0]
-        res += f"🏆 Best: {top['Item']} ({top['Ratio']}) [E:{top['Exact']}, F:{top['Fuzzy']}]"
-        if len(scorers) > 1:
-            runner = scorers[1]
-            res += f" | 🥈 2nd: {runner['Item']} ({runner['Ratio']})"
-    else:
-        res += "❌ No similar items found due to strict locks."
-        
-    return res
-
+    return best_match, debug_log
 st.title("📦 Hardware Inventory Management")
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🛒 Record Purchase", "📊 View Inventory", "📋 Masters & AI Memory", "📤 Bulk Upload Sales", "📝 Edit Purchase Bills", "📝 Edit Sales Bills"
