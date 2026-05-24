@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 from difflib import get_close_matches
 import re
-import io # <-- NEW: Required for generating Excel files in memory
+import io
 
 st.set_page_config(page_title="Hardware Inventory", layout="wide", page_icon="📦")
 
@@ -63,7 +63,7 @@ if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matc
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
-# --- REWORKED AI LOGIC WITH DEBUGGING ---
+# --- REWORKED AI LOGIC WITH STRICT ISOLATION & DEBUGGING ---
 def find_best_match(description):
     debug_log = {"Original": str(description)}
     
@@ -90,11 +90,35 @@ def find_best_match(description):
         debug_log["Status"] = "Memory Match"
         return memory_dict[desc_clean_upper], debug_log
 
-    # 3. Rule 8: STRICT HULAS MATCHING
-    has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
-    debug_log["Hulas_Lock"] = has_hulas
+    # 3. STRICT ISOLATION FILTERS
+    # These keywords strictly isolate the database. 
+    # If a keyword is IN the input, only items with it are checked.
+    # If a keyword is NOT IN the input, items with it are strictly ignored.
+    strict_keywords = [
+        "maroon", 
+        "square rod", 
+        "plain rod", 
+        "square pipe", 
+        "fibre jasta", 
+        "black pipe", 
+        "hulas"
+    ]
     
-    candidate_items = {k: v for k, v in stock_items_lower.items() if bool(re.search(r'\bhulas\b', k)) == has_hulas}
+    candidate_items = stock_items_lower.copy()
+    triggered_locks = []
+    
+    for kw in strict_keywords:
+        has_kw = bool(re.search(rf'\b{kw}\b', desc_lower))
+        if has_kw:
+            triggered_locks.append(kw)
+        
+        # Filter candidate items based on strict agreement
+        candidate_items = {
+            k: v for k, v in candidate_items.items() 
+            if bool(re.search(rf'\b{kw}\b', k)) == has_kw
+        }
+        
+    debug_log["Strict_Locks"] = triggered_locks
 
     # 4. Extract all words and score
     best_match = None
@@ -159,8 +183,12 @@ def format_debug_string(log):
     if log.get("Status") in ["Memory Match", "Exact Match"]:
         return f"🟢 {log['Status']}"
     
-    res = f"Cleaned: '{log.get('Cleaned', '')}' | Hulas: {log.get('Hulas_Lock', False)} | "
+    locks = log.get('Strict_Locks', [])
+    lock_str = f"🔒 Locks: {locks}" if locks else "🔓 Locks: None"
+    
+    res = f"Cleaned: '{log.get('Cleaned', '')}' | {lock_str} | "
     scorers = log.get("Top_Scorers", [])
+    
     if scorers:
         top = scorers[0]
         res += f"🏆 Best: {top['Item']} ({top['Ratio']}) [E:{top['Exact']}, F:{top['Fuzzy']}]"
@@ -168,7 +196,8 @@ def format_debug_string(log):
             runner = scorers[1]
             res += f" | 🥈 2nd: {runner['Item']} ({runner['Ratio']})"
     else:
-        res += "❌ No similar items found in master."
+        res += "❌ No similar items found due to strict locks."
+        
     return res
 
 st.title("📦 Hardware Inventory Management")
@@ -500,6 +529,7 @@ with tab4:
                     st.warning(f"⚠️ {len(unmatched)} items could not be matched automatically.")
                     with st.form("manual_mapping_form"):
                         manual_selections = []
+                        # Stretched layout to fit the new Debug column
                         h1, h2, h3, h4, h5, h6 = st.columns([1, 1.5, 0.5, 1, 2.5, 2])
                         h1.write("**Bill No**")
                         h2.write("**Billed Description**")
