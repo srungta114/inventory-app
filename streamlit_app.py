@@ -50,7 +50,6 @@ if not mapping_df.empty:
     if len(mapping_df.columns) >= 2:
         code_dict = dict(zip(mapping_df.iloc[:, 0].astype(str).str.strip(), mapping_df.iloc[:, 1].astype(str).str.strip()))
     if len(mapping_df.columns) >= 3:
-        # Grabs the 3rd column for the Stock Keeping Unit (SKU) Check
         unit_dict = dict(zip(mapping_df.iloc[:, 0].astype(str).str.strip(), mapping_df.iloc[:, 2].astype(str).str.strip()))
 
 # 2. Create the AI Memory dictionary
@@ -268,7 +267,6 @@ with tab4:
                     bill_val = str(row[1]).strip()
                     qty_val = float(row[2])
                     
-                    # --- NEW: Extract Sales Unit from Column 10 (index 9) safely ---
                     sales_unit = str(row[9]).strip() if len(row) > 9 and pd.notna(row[9]) else ""
                     raw_item_code = str(row[4]).strip() if len(row) > 4 and pd.notna(row[4]) else ""
                     other_desc = str(row[5]).strip() if len(row) > 5 and pd.notna(row[5]) else ""
@@ -276,7 +274,6 @@ with tab4:
                     mapped_name = code_dict.get(raw_item_code, raw_item_code)
                     sku_unit = unit_dict.get(raw_item_code, "")
                     
-                    # Create the Unit Validation String
                     if sales_unit and sku_unit:
                         if sales_unit.lower() == sku_unit.lower():
                             unit_check = f"✅ {sales_unit}"
@@ -284,8 +281,6 @@ with tab4:
                             unit_check = f"⚠️ File: {sales_unit} | SKU: {sku_unit}"
                     else:
                         unit_check = f"{sales_unit}" if sales_unit else f"{sku_unit}"
-                    
-                    raw_combo = f"{raw_item_code} - {other_desc}".strip(" -")
                     
                     if mapped_name and mapped_name.lower() != 'nan':
                         merged_description = f"{mapped_name} - {other_desc}".strip(" -")
@@ -328,21 +323,9 @@ with tab4:
                 auto_matched = st.session_state.auto_matched
                 unmatched = st.session_state.unmatched
                 
-                if auto_matched:
-                    st.success(f"✅ Automatically matched {len(auto_matched)} items.")
-                    # Show Original Billed Data & Unit Check, hide the internal parsing column
-                    display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc'], errors='ignore')
-                    with st.expander("View Auto-Matched Items"):
-                        st.dataframe(display_df, use_container_width=True)
-                
-                final_records_to_commit = list(auto_matched) 
-                
-                # --- Unified Safe Commit Function ---
-                def commit_sales_to_db(new_learned=None):
-                    # Filter out visual/temporary columns before saving to the DB to keep it clean
-                    clean_records = [{k: v for k, v in r.items() if k not in ['Display_Desc', 'Original Billed Data', 'Unit Check']} for r in final_records_to_commit]
-                    new_records_df = pd.DataFrame(clean_records)
-                    
+                # --- NEW: Unified Safe Commit Function taking processed records ---
+                def commit_sales_to_db(records_to_save, new_learned=None):
+                    new_records_df = pd.DataFrame(records_to_save)
                     current_purchases = purchases_df.copy()
                     bills_to_delete = st.session_state.get("bills_to_delete", [])
                     
@@ -373,6 +356,29 @@ with tab4:
                             
                     st.rerun()
 
+                # --- NEW: Editable Auto-Matched DataFrame ---
+                if auto_matched:
+                    st.success(f"✅ Automatically matched {len(auto_matched)} items.")
+                    st.write("✏️ **Review and override any incorrect automatic matches below:**")
+                    display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc'], errors='ignore')
+                    
+                    # Convert to data editor so the user can change Item_Name
+                    edited_auto_df = st.data_editor(
+                        display_df,
+                        column_config={
+                            "Item_Name": st.column_config.SelectboxColumn(
+                                "Item_Name (Editable)",
+                                help="Select the correct master product to override the AI",
+                                options=stock_items,
+                                required=True
+                            )
+                        },
+                        use_container_width=True,
+                        key="auto_match_editor"
+                    )
+                else:
+                    edited_auto_df = pd.DataFrame()
+
                 if unmatched:
                     st.warning(f"⚠️ {len(unmatched)} items could not be matched automatically.")
                     with st.form("manual_mapping_form"):
@@ -397,8 +403,35 @@ with tab4:
                             
                         st.write("")
                         if st.form_submit_button("Confirm Manual Matches & Commit ALL Sales", type="primary"):
+                            final_records_to_commit = []
                             new_learned_rules = [] 
                             
+                            # 1. Process Auto-Matched edits
+                            if not edited_auto_df.empty:
+                                for idx, row in edited_auto_df.iterrows():
+                                    orig_row = auto_matched[idx]
+                                    current_item = row['Item_Name']
+                                    item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
+                                    
+                                    final_records_to_commit.append({
+                                        "Date": row['Date'], 
+                                        "Bill Number": row['Bill Number'], 
+                                        "Group": item_details['Group'], 
+                                        "Item_Name": current_item,
+                                        "Purchase Qty": 0, 
+                                        "Purchase Unit": "-", 
+                                        "Stock Qty Added": row['Stock Qty Added'], 
+                                        "Stock Unit": item_details['Sales_Unit']
+                                    })
+                                    
+                                    # Memorize if user changed it
+                                    if current_item != orig_row['Item_Name']:
+                                        new_learned_rules.append({
+                                            "Billed_Description": str(orig_row['Display_Desc']).strip().upper(),
+                                            "Matched_Item_Name": current_item
+                                        })
+                            
+                            # 2. Process Manual matches
                             for un_row, selected_item in manual_selections:
                                 if selected_item != "-- Skip / Do Not Import --":
                                     item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
@@ -411,10 +444,7 @@ with tab4:
                                         "Purchase Qty": 0, 
                                         "Purchase Unit": "-", 
                                         "Stock Qty Added": -abs(un_row['Qty']), 
-                                        "Stock Unit": item_details['Sales_Unit'], 
-                                        "Original Billed Data": un_row['Original Billed Data'], 
-                                        "Unit Check": un_row.get('Unit Check', ''),
-                                        "Display_Desc": un_row['Description']
+                                        "Stock Unit": item_details['Sales_Unit']
                                     })
                                     
                                     new_learned_rules.append({
@@ -423,11 +453,39 @@ with tab4:
                                     })
                             
                             if final_records_to_commit or st.session_state.get("bills_to_delete"):
-                                commit_sales_to_db(new_learned_rules)
+                                commit_sales_to_db(final_records_to_commit, new_learned_rules)
                 else:
                     if st.button("Commit Sales to Database", type="primary"):
+                        final_records_to_commit = []
+                        new_learned_rules = []
+                        
+                        # Process Auto-Matched edits
+                        if not edited_auto_df.empty:
+                            for idx, row in edited_auto_df.iterrows():
+                                orig_row = auto_matched[idx]
+                                current_item = row['Item_Name']
+                                item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
+                                
+                                final_records_to_commit.append({
+                                    "Date": row['Date'], 
+                                    "Bill Number": row['Bill Number'], 
+                                    "Group": item_details['Group'], 
+                                    "Item_Name": current_item,
+                                    "Purchase Qty": 0, 
+                                    "Purchase Unit": "-", 
+                                    "Stock Qty Added": row['Stock Qty Added'], 
+                                    "Stock Unit": item_details['Sales_Unit']
+                                })
+                                
+                                # Memorize if user changed it
+                                if current_item != orig_row['Item_Name']:
+                                    new_learned_rules.append({
+                                        "Billed_Description": str(orig_row['Display_Desc']).strip().upper(),
+                                        "Matched_Item_Name": current_item
+                                    })
+                                    
                         if final_records_to_commit or st.session_state.get("bills_to_delete"):
-                            commit_sales_to_db()
+                            commit_sales_to_db(final_records_to_commit, new_learned_rules)
 
     else:
         keys_to_clear = ['auto_matched', 'unmatched', 'processed_file_name', 'raw_upload_data', 'resolving_duplicates', 'df_to_process', 'bills_to_delete', 'committed_file_name']
