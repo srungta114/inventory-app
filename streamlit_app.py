@@ -67,23 +67,35 @@ stock_items_lower = {str(item).lower(): item for item in stock_items}
 def normalize_text(text):
     t = str(text).strip().lower()
     
-    # 1. Fractions and Quotes
+    # 1. Fractions, Quotes, and Symbols
     t = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), t)
     t = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), t)
     t = t.replace('"', ' inch').replace("'", ' feet')
+    
+    # NEW RULE: Convert number followed by # to gauge (e.g., 18# -> 18 gauge)
+    t = re.sub(r'([\d.]+)\s*#', r'\1 gauge', t)
     
     # 2. Parameter Rules (with flexible spaces/hyphens)
     t = re.sub(r'\bred\b', 'maroon', t)
     t = re.sub(r'\bms[\s-]+(sq|square)[\s-]+rod\b', 'square rod', t)
     t = re.sub(r'\bms[\s-]+plain[\s-]+rod\b', 'plain rod', t)
-    t = re.sub(r'\bms[\s-]+(sq|square)[\s-]+pipe\b', 'square pipe', t)
     t = re.sub(r'\bfibre[\s-]+corrugated[\s-]+sheet\b', 'fibre jasta', t)
     
-    # 3. Rule 2: MS + Round + Pipe
-    if re.search(r'\bms\b', t) and re.search(r'\bround\b', t) and re.search(r'\bpipe\b', t):
-        t = re.sub(r'\bms\b', 'black pipe', t)
+    # 3. Any-Order Combinations (Extracts words to prevent self-deletion, then appends)
+    # Rule 6: MS + SQ/SQUARE + PIPE
+    if re.search(r'\bms\b', t) and re.search(r'\b(sq|square)\b', t) and re.search(r'\bpipe\b', t):
+        t = re.sub(r'\bms\b', '', t)
+        t = re.sub(r'\bsq\b', '', t)
+        t = re.sub(r'\bsquare\b', '', t)
+        t = re.sub(r'\bpipe\b', '', t)
+        t += ' square pipe'
+        
+    # Rule 2: MS + ROUND + PIPE
+    elif re.search(r'\bms\b', t) and re.search(r'\bround\b', t) and re.search(r'\bpipe\b', t):
+        t = re.sub(r'\bms\b', '', t)
         t = re.sub(r'\bround\b', '', t)
         t = re.sub(r'\bpipe\b', '', t)
+        t += ' black pipe'
         
     # Clean up any messy spacing left behind
     return " ".join(t.split())
@@ -102,7 +114,7 @@ def find_best_match(description):
     desc_clean = normalize_text(description)
     debug_log["Cleaned"] = desc_clean
     
-    # 3. Normalize the Master List (So the rules apply to both sides equally)
+    # 3. Normalize the Master List
     candidates = []
     for k, v in stock_items_lower.items():
         candidates.append({
