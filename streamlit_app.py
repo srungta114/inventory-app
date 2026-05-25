@@ -70,11 +70,10 @@ def find_best_match(description):
     # 1. Pre-process and Normalize
     desc_lower = str(description).strip().lower()
     
-    # Normalize fractions and inches
-    # Convert '1 1/2' to '1.5'
+    # Normalize fractions and inches (e.g. 1 1/2 -> 1.5)
     desc_lower = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), desc_lower)
     desc_lower = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), desc_lower)
-    # Remove inch quotes
+    # Remove inch quotes and replace with uniform text
     desc_lower = desc_lower.replace('"', ' inch').replace("'", ' feet')
     
     # Apply Parameter Rules
@@ -84,10 +83,12 @@ def find_best_match(description):
     desc_lower = re.sub(r'\bms\s+(sq|square)\s+pipe\b', 'square pipe', desc_lower)
     desc_lower = re.sub(r'\bfibre\s+corrugated\s+sheet\b', 'fibre jasta', desc_lower)
     
-    # Updated Rule 2: MS + ROUND + PIPE (Strict pattern matching)
-    # This catches "ms round pipe", "ms-round-pipe", "ms round pipe", etc.
+    # Updated Rule 2: MS + ROUND + PIPE (Strict pattern matching regardless of spaces/hyphens)
     if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
-        desc_lower = 'black pipe'
+        desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
+        desc_lower = re.sub(r'\bround\b', '', desc_lower)
+        desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
+        desc_lower = " ".join(desc_lower.split()) # Clean up double spaces
         
     debug_log["Cleaned"] = desc_lower
 
@@ -98,6 +99,7 @@ def find_best_match(description):
 
     # 3. Rule 8: STRICT HULAS MATCHING
     has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
+    debug_log["Hulas_Lock"] = has_hulas
     candidate_items = {k: v for k, v in stock_items_lower.items() if bool(re.search(r'\bhulas\b', k)) == has_hulas}
 
     # 4. Scoring Algorithm (Tokenized)
@@ -105,36 +107,79 @@ def find_best_match(description):
     highest_score = 0
     desc_words = set(desc_lower.split())
     
+    if not desc_words:
+        debug_log["Status"] = "Empty String"
+        return None, debug_log
+    
     scoring_details = []
     
     for key, val in candidate_items.items():
-        # Normalize key for comparison
+        # Normalize the master key just like we did the description
         clean_key = key.replace('"', ' inch').replace("'", ' feet')
         key_words = set(clean_key.split())
         
-        if desc_lower == key: 
-            return val, {"Status": "Exact Match"}
+        if not key_words: continue
         
+        if desc_lower == clean_key: 
+            debug_log["Status"] = "Exact Match"
+            return val, debug_log
+            
         score = 0
-        # Weights: Exact Word = 1.0, Fuzzy Word = 0.7
+        exact_matches = []
+        fuzzy_matches = []
+        
         for d_word in desc_words:
             if d_word in key_words:
                 score += 1 
-            elif get_close_matches(d_word, key_words, n=1, cutoff=0.8):
-                score += 0.7 
+                exact_matches.append(d_word)
+            else:
+                fuzzy = get_close_matches(d_word, key_words, n=1, cutoff=0.8)
+                if fuzzy:
+                    score += 0.7 # Weight of fuzzy match
+                    fuzzy_matches.append(f"{d_word}->{fuzzy[0]}")
         
-        # Scored Ratio
         denominator = max(len(key_words), len(desc_words))
         match_ratio = score / denominator if denominator > 0 else 0
         
+        if match_ratio > 0:
+            scoring_details.append({
+                "Item": val,
+                "Ratio": round(match_ratio, 2),
+                "Exact": exact_matches,
+                "Fuzzy": fuzzy_matches
+            })
+            
         if match_ratio > highest_score:
             highest_score = match_ratio
             best_match = val
             
-    debug_log["Status"] = "Score Calculated"
-    debug_log["Highest_Score"] = highest_score
+    # Sort and store top 3 scores for debugging
+    scoring_details = sorted(scoring_details, key=lambda x: x["Ratio"], reverse=True)[:3]
+    debug_log["Top_Scorers"] = scoring_details
+            
+    if highest_score >= 0.3:
+        debug_log["Status"] = "Fuzzy Passed"
+        return best_match, debug_log
+        
+    debug_log["Status"] = "Failed (Score < 0.3)"
+    return None, debug_log
+
+def format_debug_string(log):
+    if log.get("Status") in ["Memory Match", "Exact Match"]:
+        return f"🟢 {log['Status']}"
     
-    return best_match, debug_log
+    res = f"Cleaned: '{log.get('Cleaned', '')}' | Hulas: {log.get('Hulas_Lock', False)} | "
+    scorers = log.get("Top_Scorers", [])
+    if scorers:
+        top = scorers[0]
+        res += f"🏆 Best: {top['Item']} ({top['Ratio']}) [E:{top['Exact']}, F:{top['Fuzzy']}]"
+        if len(scorers) > 1:
+            runner = scorers[1]
+            res += f" | 🥈 2nd: {runner['Item']} ({runner['Ratio']})"
+    else:
+        res += "❌ No similar items found in master."
+    return res
+
 st.title("📦 Hardware Inventory Management")
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🛒 Record Purchase", "📊 View Inventory", "📋 Masters & AI Memory", "📤 Bulk Upload Sales", "📝 Edit Purchase Bills", "📝 Edit Sales Bills"
