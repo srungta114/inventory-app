@@ -63,49 +63,80 @@ if not learned_df.empty and 'Billed_Description' in learned_df.columns and 'Matc
 stock_items = products_df['Item_Name'].dropna().unique().tolist()
 stock_items_lower = {str(item).lower(): item for item in stock_items}
 
-# --- REWORKED ROBUST AI LOGIC ---
+# --- UNIVERSAL NORMALIZATION ENGINE ---
+def normalize_text(text):
+    t = str(text).strip().lower()
+    
+    # 1. Fractions and Quotes
+    t = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), t)
+    t = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), t)
+    t = t.replace('"', ' inch').replace("'", ' feet')
+    
+    # 2. Parameter Rules (with flexible spaces/hyphens)
+    t = re.sub(r'\bred\b', 'maroon', t)
+    t = re.sub(r'\bms[\s-]+(sq|square)[\s-]+rod\b', 'square rod', t)
+    t = re.sub(r'\bms[\s-]+plain[\s-]+rod\b', 'plain rod', t)
+    t = re.sub(r'\bms[\s-]+(sq|square)[\s-]+pipe\b', 'square pipe', t)
+    t = re.sub(r'\bfibre[\s-]+corrugated[\s-]+sheet\b', 'fibre jasta', t)
+    
+    # 3. Rule 2: MS + Round + Pipe
+    if re.search(r'\bms\b', t) and re.search(r'\bround\b', t) and re.search(r'\bpipe\b', t):
+        t = re.sub(r'\bms\b', 'black pipe', t)
+        t = re.sub(r'\bround\b', '', t)
+        t = re.sub(r'\bpipe\b', '', t)
+        
+    # Clean up any messy spacing left behind
+    return " ".join(t.split())
+
+# --- REWORKED AI LOGIC WITH DUAL-NORMALIZATION ---
 def find_best_match(description):
     debug_log = {"Original": str(description)}
     
-    # 1. Pre-process and Normalize
-    desc_lower = str(description).strip().lower()
-    
-    # Normalize fractions and inches (e.g. 1 1/2 -> 1.5)
-    desc_lower = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), desc_lower)
-    desc_lower = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), desc_lower)
-    # Remove inch quotes and replace with uniform text
-    desc_lower = desc_lower.replace('"', ' inch').replace("'", ' feet')
-    
-    # Apply Parameter Rules
-    desc_lower = re.sub(r'\bred\b', 'maroon', desc_lower)
-    desc_lower = re.sub(r'\bms\s+(sq|square)\s+rod\b', 'square rod', desc_lower)
-    desc_lower = re.sub(r'\bms\s+plain\s+rod\b', 'plain rod', desc_lower)
-    desc_lower = re.sub(r'\bms\s+(sq|square)\s+pipe\b', 'square pipe', desc_lower)
-    desc_lower = re.sub(r'\bfibre\s+corrugated\s+sheet\b', 'fibre jasta', desc_lower)
-    
-    # Updated Rule 2: MS + ROUND + PIPE (Strict pattern matching regardless of spaces/hyphens)
-    if re.search(r'\bms\b', desc_lower) and re.search(r'\bround\b', desc_lower) and re.search(r'\bpipe\b', desc_lower):
-        desc_lower = re.sub(r'\bms\b', 'black pipe', desc_lower)
-        desc_lower = re.sub(r'\bround\b', '', desc_lower)
-        desc_lower = re.sub(r'\bpipe\b', '', desc_lower)
-        desc_lower = " ".join(desc_lower.split()) # Clean up double spaces
-        
-    debug_log["Cleaned"] = desc_lower
-
-    # 2. AI Memory Bank Check
-    if desc_lower.upper() in memory_dict:
+    # 1. AI Memory Bank Check (Check exact original text first)
+    orig_upper = str(description).strip().upper()
+    if orig_upper in memory_dict:
         debug_log["Status"] = "Memory Match"
-        return memory_dict[desc_lower.upper()], debug_log
+        return memory_dict[orig_upper], debug_log
 
-    # 3. Rule 8: STRICT HULAS MATCHING
-    has_hulas = bool(re.search(r'\bhulas\b', desc_lower))
-    debug_log["Hulas_Lock"] = has_hulas
-    candidate_items = {k: v for k, v in stock_items_lower.items() if bool(re.search(r'\bhulas\b', k)) == has_hulas}
+    # 2. Normalize the Uploaded Description
+    desc_clean = normalize_text(description)
+    debug_log["Cleaned"] = desc_clean
+    
+    # 3. Normalize the Master List (So the rules apply to both sides equally)
+    candidates = []
+    for k, v in stock_items_lower.items():
+        candidates.append({
+            "original_key": k,
+            "norm_key": normalize_text(k),
+            "val": v
+        })
 
-    # 4. Scoring Algorithm (Tokenized)
+    # 4. STRICT ISOLATION FILTERS
+    strict_keywords = [
+        "maroon", 
+        "square rod", 
+        "plain rod", 
+        "square pipe", 
+        "fibre jasta", 
+        "black pipe", 
+        "hulas"
+    ]
+    
+    triggered_locks = []
+    for kw in strict_keywords:
+        has_kw = bool(re.search(rf'\b{kw}\b', desc_clean))
+        if has_kw:
+            triggered_locks.append(kw)
+        
+        # Apply the lock to the NORMALIZED master list
+        candidates = [c for c in candidates if bool(re.search(rf'\b{kw}\b', c["norm_key"])) == has_kw]
+        
+    debug_log["Strict_Locks"] = triggered_locks
+
+    # 5. Extract words and score
     best_match = None
     highest_score = 0
-    desc_words = set(desc_lower.split())
+    desc_words = set(desc_clean.split())
     
     if not desc_words:
         debug_log["Status"] = "Empty String"
@@ -113,17 +144,17 @@ def find_best_match(description):
     
     scoring_details = []
     
-    for key, val in candidate_items.items():
-        # Normalize the master key just like we did the description
-        clean_key = key.replace('"', ' inch').replace("'", ' feet')
-        key_words = set(clean_key.split())
+    for c in candidates:
+        norm_key = c["norm_key"]
+        val = c["val"]
         
-        if not key_words: continue
-        
-        if desc_lower == clean_key: 
+        if desc_clean == norm_key: 
             debug_log["Status"] = "Exact Match"
             return val, debug_log
             
+        key_words = set(norm_key.split())
+        if not key_words: continue
+        
         score = 0
         exact_matches = []
         fuzzy_matches = []
@@ -133,9 +164,9 @@ def find_best_match(description):
                 score += 1 
                 exact_matches.append(d_word)
             else:
-                fuzzy = get_close_matches(d_word, key_words, n=1, cutoff=0.8)
+                fuzzy = get_close_matches(d_word, key_words, n=1, cutoff=0.6)
                 if fuzzy:
-                    score += 0.7 # Weight of fuzzy match
+                    score += 0.8
                     fuzzy_matches.append(f"{d_word}->{fuzzy[0]}")
         
         denominator = max(len(key_words), len(desc_words))
@@ -168,8 +199,12 @@ def format_debug_string(log):
     if log.get("Status") in ["Memory Match", "Exact Match"]:
         return f"🟢 {log['Status']}"
     
-    res = f"Cleaned: '{log.get('Cleaned', '')}' | Hulas: {log.get('Hulas_Lock', False)} | "
+    locks = log.get('Strict_Locks', [])
+    lock_str = f"🔒 Locks: {locks}" if locks else "🔓 Locks: None"
+    
+    res = f"Cleaned: '{log.get('Cleaned', '')}' | {lock_str} | "
     scorers = log.get("Top_Scorers", [])
+    
     if scorers:
         top = scorers[0]
         res += f"🏆 Best: {top['Item']} ({top['Ratio']}) [E:{top['Exact']}, F:{top['Fuzzy']}]"
@@ -177,7 +212,8 @@ def format_debug_string(log):
             runner = scorers[1]
             res += f" | 🥈 2nd: {runner['Item']} ({runner['Ratio']})"
     else:
-        res += "❌ No similar items found in master."
+        res += "❌ No similar items found due to strict locks."
+        
     return res
 
 st.title("📦 Hardware Inventory Management")
@@ -472,7 +508,7 @@ with tab4:
                     # Drop DB clutter columns so 'AI Reasoning' fits perfectly on screen
                     display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc', 'Group', 'Purchase Qty', 'Purchase Unit', 'Stock Qty Added', 'Stock Unit'], errors='ignore')
                     
-                    # --- NEW: Download to Excel Feature ---
+                    # --- Download to Excel Feature ---
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                         display_df.to_excel(writer, index=False, sheet_name='Auto_Matched')
