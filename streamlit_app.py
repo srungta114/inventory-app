@@ -87,7 +87,7 @@ def normalize_text(text):
     t = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', t)
     t = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', t)
     
-    # NEW RULE: Dimension Smart-Check (A x B)
+    # Dimension Smart-Check (A x B)
     # If two unequal dimensions are found around an 'x', it is a rectangle.
     dim_match = re.search(r'([\d.]+)\s*(?:inch|feet|mm|cm)?\s*[xX*]\s*([\d.]+)', t)
     if dim_match:
@@ -127,11 +127,11 @@ def normalize_text(text):
     # Clean up any messy spacing left behind
     return " ".join(t.split())
 
-# --- REWORKED AI LOGIC WITH DUAL-NORMALIZATION ---
-def find_best_match(description):
+# --- REWORKED AI LOGIC WITH DYNAMIC CODE MAPPING KEYWORDS ---
+def find_best_match(description, mapped_keywords=""):
     debug_log = {"Original": str(description)}
     
-    # 1. AI Memory Bank Check (Check exact original text first)
+    # 1. AI Memory Bank Check
     orig_upper = str(description).strip().upper()
     if orig_upper in memory_dict:
         debug_log["Status"] = "Memory Match"
@@ -150,7 +150,7 @@ def find_best_match(description):
             "val": v
         })
 
-    # 4. STRICT ISOLATION FILTERS
+    # 4. STATIC STRICT ISOLATION FILTERS
     strict_keywords = [
         "maroon", 
         "square rod", 
@@ -168,9 +168,30 @@ def find_best_match(description):
         if has_kw:
             triggered_locks.append(kw)
         
-        # Apply the lock to the NORMALIZED master list
+        # Apply the static lock
         candidates = [c for c in candidates if bool(re.search(rf'\b{kw}\b', c["norm_key"])) == has_kw]
+
+    # --- NEW: DYNAMIC MAPPED KEYWORDS (ACT AS STRICT KEYWORDS) ---
+    if mapped_keywords:
+        norm_kw = normalize_text(mapped_keywords)
+        # Split into words, ignoring single characters
+        kw_list = [w for w in norm_kw.split() if len(w) > 1]
         
+        for kw in kw_list:
+            filtered_candidates = []
+            for c in candidates:
+                c_words = c["norm_key"].split()
+                # Keyword must be present or a very close fuzzy match
+                if kw in c_words or get_close_matches(kw, c_words, n=1, cutoff=0.8):
+                    filtered_candidates.append(c)
+            
+            # Safety catch: only apply dynamic lock if it doesn't eliminate all candidates
+            if filtered_candidates:
+                candidates = filtered_candidates
+                triggered_locks.append(f"MAP:{kw}")
+            else:
+                triggered_locks.append(f"MAP:{kw}(Bypassed)")
+
     debug_log["Strict_Locks"] = triggered_locks
 
     # 5. Extract words and score
@@ -306,7 +327,7 @@ with tab1:
                     st.cache_data.clear()
                     st.success(f"✅ Saved! Added {final_stock} {s_unit} to inventory under Bill: {bill_number}")
 
-# --- TAB 2: VIEW INVENTORY & LEDGER ---
+# --- TAB 2: VIEW INVENTORY & Ledger ---
 with tab2:
     st.header("Live Stock Levels & Ledger")
     
@@ -461,12 +482,17 @@ with tab4:
                     else:
                         unit_check = f"{sales_unit}" if sales_unit else f"{sku_unit}"
                     
+                    # --- DYNAMIC MAPPING KEYWORDS LOGIC ---
+                    mapping_kw = ""
                     if mapped_name and mapped_name.lower() != 'nan':
                         merged_description = f"{mapped_name} - {other_desc}".strip(" -")
+                        # Only use as a strict mapping keyword if the code actually exists in the code_dict map
+                        if raw_item_code in code_dict and str(code_dict[raw_item_code]).strip().lower() != 'nan':
+                            mapping_kw = str(code_dict[raw_item_code]).strip()
                     else:
                         merged_description = other_desc
                     
-                    matched_item, debug_log = find_best_match(merged_description)
+                    matched_item, debug_log = find_best_match(merged_description, mapped_keywords=mapping_kw)
                     debug_str = format_debug_string(debug_log)
                     
                     if matched_item:
