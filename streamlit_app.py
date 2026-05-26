@@ -79,8 +79,9 @@ def normalize_text(text):
     # Standardize 'ft' or 'foot' to 'feet' (e.g., 6ft -> 6 feet)
     t = re.sub(r'\b(\d+(?:\.\d+)?)\s*(?:ft|foot)\b', r'\1 feet ', t)
     
-    # Convert number followed by # to gauge (e.g., 18# -> 18 gauge)
+    # Convert number followed by # or standalone 'g' to gauge (e.g., 18# -> 18 gauge, 24 g -> 24 gauge)
     t = re.sub(r'([\d.]+)\s*#', r'\1 gauge ', t)
+    t = re.sub(r'\b([\d.]+)\s*g\b', r'\1 gauge ', t)
     
     # Remove hyphens and non-decimal periods to prevent words merging (e.g., "SQ.14" -> "SQ 14")
     t = t.replace('-', ' ')
@@ -106,7 +107,7 @@ def normalize_text(text):
     t = re.sub(r'\bms[\s]+(sq|square)[\s]+rod\b', 'square rod', t)
     t = re.sub(r'\bms[\s]+plain[\s]+rod\b', 'plain rod', t)
     
-    # NEW CORRUGATED RULE: ONLY catch "fibre corrugated" (leave metal corrugated alone)
+    # CORRUGATED RULE: ONLY catch "fibre corrugated" (leave metal corrugated alone)
     t = re.sub(r'\bfibre[\s]+corrugated(?:[\s]+sheet)?\b', 'fibre jasta', t)
     
     # 3. Any-Order Combinations
@@ -150,7 +151,7 @@ def find_best_match(description, mapped_keywords=""):
             "val": v
         })
 
-    # 4. STATIC STRICT ISOLATION FILTERS (Added Jagadamba)
+    # 4. STATIC STRICT ISOLATION FILTERS
     strict_keywords = [
         "maroon", 
         "square rod", 
@@ -163,12 +164,24 @@ def find_best_match(description, mapped_keywords=""):
         "jagadamba"
     ]
     
-    # --- NEW RULE: STRICT LENGTH LOCK FOR ALL CORRUGATED SHEETS ---
+    # --- NEW RULE: STRICT ROOFING LOCKS (LENGTH & THICKNESS) ---
     if 'jasta' in desc_clean or 'corrugated' in desc_clean:
+        # A. Length Lock (Applies to ALL roofing sheets)
         length_match = re.search(r'\b(\d+(?:\.\d+)?)\s*feet\b', desc_clean)
         if length_match:
-            # Dynamically add the specific length (e.g., "6 feet") to the strict locks
             strict_keywords.append(f"{length_match.group(1)} feet")
+            
+        # B. Thickness Lock (Applies to METAL only - ignored if fibre)
+        if 'fibre' not in desc_clean:
+            # Check for mm
+            mm_match = re.search(r'\b(\d+(?:\.\d+)?)\s*mm\b', desc_clean)
+            if mm_match:
+                strict_keywords.append(f"{mm_match.group(1)} mm")
+                
+            # Check for gauge
+            gauge_match = re.search(r'\b(\d+(?:\.\d+)?)\s*gauge\b', desc_clean)
+            if gauge_match:
+                strict_keywords.append(f"{gauge_match.group(1)} gauge")
     
     triggered_locks = []
     for kw in strict_keywords:
@@ -714,57 +727,4 @@ with tab4:
                                 if current_item != orig_row['Item_Name']:
                                     new_learned_rules.append({
                                         "Billed_Description": str(orig_row['Display_Desc']).strip().upper(),
-                                        "Matched_Item_Name": current_item
-                                    })
-                                    
-                        if final_records_to_commit or st.session_state.get("bills_to_delete"):
-                            commit_sales_to_db(final_records_to_commit, new_learned_rules)
-
-    else:
-        keys_to_clear = ['auto_matched', 'unmatched', 'processed_file_name', 'raw_upload_data', 'resolving_duplicates', 'df_to_process', 'bills_to_delete', 'committed_file_name']
-        for key in keys_to_clear:
-            if key in st.session_state:
-                del st.session_state[key]
-
-# --- TABS 5 & 6: EDIT PURCHASE / SALES BILLS ---
-def bill_editor(is_purchase, suffix):
-    st.header(f"Edit {'Purchase' if is_purchase else 'Sales'} Bills")
-    
-    if purchases_df.empty:
-        st.info("No records found.")
-        return
-        
-    if is_purchase:
-        df_filtered = purchases_df[pd.to_numeric(purchases_df['Purchase Qty'], errors='coerce') > 0].copy()
-    else:
-        df_filtered = purchases_df[pd.to_numeric(purchases_df['Stock Qty Added'], errors='coerce') < 0].copy()
-
-    if df_filtered.empty:
-        st.info(f"No {'purchase' if is_purchase else 'sales'} records found.")
-        return
-
-    df_filtered['Date_Str'] = pd.to_datetime(df_filtered['Date'], dayfirst=True, errors='coerce').dt.strftime('%d/%m/%Y')
-    df_filtered['Bill_Label'] = df_filtered['Bill Number'].astype(str).str.strip() + " (Date: " + df_filtered['Date_Str'].astype(str) + ")"
-    
-    bill_list = sorted(df_filtered['Bill_Label'].dropna().unique())
-    selected_label = st.selectbox(f"Select Bill to Edit", options=bill_list, index=None, key=f"sel_{suffix}")
-
-    if selected_label:
-        bill_data = df_filtered[df_filtered['Bill_Label'] == selected_label].copy()
-        original_indices = bill_data.index
-        display_df = bill_data.drop(columns=['Bill_Label', 'Date_Str'])
-        
-        edited_df = st.data_editor(display_df, key=f"edit_{suffix}", use_container_width=True)
-
-        if st.button("💾 Save Bill Changes", key=f"save_{suffix}", type="primary"):
-            final_df = purchases_df.drop(index=original_indices).copy()
-            final_df = pd.concat([final_df, edited_df], ignore_index=True)
-            save_purchases(final_df)
-            st.cache_data.clear()
-            st.success("✅ Bill updated successfully!")
-            st.rerun()
-
-with tab5:
-    bill_editor(is_purchase=True, suffix="pur")
-with tab6:
-    bill_editor(is_purchase=False, suffix="sal")
+                                        "Matched_Item_Name
