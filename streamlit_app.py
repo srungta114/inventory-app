@@ -67,13 +67,25 @@ stock_items_lower = {str(item).lower(): item for item in stock_items}
 def normalize_text(text):
     t = str(text).strip().lower()
     
+    # 0. Common Master DB Typos & Abbreviations
+    t = re.sub(r'\bsqaure\b', 'square', t)
+    t = re.sub(r'\brect\b', 'rectangle', t)
+    
     # 1. Fractions, Quotes, and Symbols
     t = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), t)
     t = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), t)
-    t = t.replace('"', ' inch').replace("'", ' feet')
+    t = t.replace('"', ' inch ').replace("'", ' feet ')
     
     # Convert number followed by # to gauge (e.g., 18# -> 18 gauge)
-    t = re.sub(r'([\d.]+)\s*#', r'\1 gauge', t)
+    t = re.sub(r'([\d.]+)\s*#', r'\1 gauge ', t)
+    
+    # Remove hyphens and non-decimal periods to prevent words merging (e.g., "SQ.14" -> "SQ 14")
+    t = t.replace('-', ' ')
+    t = re.sub(r'(?<!\d)\.|\.(?!\d)', ' ', t)
+    
+    # Separate attached letters and numbers (e.g., "inchsq" -> "inch sq", "14gauge" -> "14 gauge")
+    t = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', t)
+    t = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', t)
     
     # NEW RULE: Dimension Smart-Check (A x B)
     # If two unequal dimensions are found around an 'x', it is a rectangle.
@@ -87,14 +99,14 @@ def normalize_text(text):
                 t = re.sub(r'\b(sq|square)\b', 'rectangle', t)
         except ValueError:
             pass
-    
-    # 2. Parameter Rules (with flexible spaces/hyphens)
+            
+    # 2. Parameter Rules
     t = re.sub(r'\bred\b', 'maroon', t)
-    t = re.sub(r'\bms[\s-]+(sq|square)[\s-]+rod\b', 'square rod', t)
-    t = re.sub(r'\bms[\s-]+plain[\s-]+rod\b', 'plain rod', t)
-    t = re.sub(r'\bfibre[\s-]+corrugated[\s-]+sheet\b', 'fibre jasta', t)
+    t = re.sub(r'\bms[\s]+(sq|square)[\s]+rod\b', 'square rod', t)
+    t = re.sub(r'\bms[\s]+plain[\s]+rod\b', 'plain rod', t)
+    t = re.sub(r'\bfibre[\s]+corrugated[\s]+sheet\b', 'fibre jasta', t)
     
-    # 3. Any-Order Combinations (Extracts words to prevent self-deletion, then appends)
+    # 3. Any-Order Combinations
     # Rule 6: MS + SQ/SQUARE/RECTANGLE + PIPE
     if re.search(r'\bms\b', t) and re.search(r'\b(sq|square|rectangle)\b', t) and re.search(r'\bpipe\b', t):
         is_rect = bool(re.search(r'\brectangle\b', t))
@@ -144,7 +156,7 @@ def find_best_match(description):
         "square rod", 
         "plain rod", 
         "square pipe", 
-        "rectangle pipe",  # <-- Added Rectangle isolation
+        "rectangle pipe",
         "fibre jasta", 
         "black pipe", 
         "hulas"
