@@ -72,8 +72,21 @@ def normalize_text(text):
     t = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), t)
     t = t.replace('"', ' inch').replace("'", ' feet')
     
-    # NEW RULE: Convert number followed by # to gauge (e.g., 18# -> 18 gauge)
+    # Convert number followed by # to gauge (e.g., 18# -> 18 gauge)
     t = re.sub(r'([\d.]+)\s*#', r'\1 gauge', t)
+    
+    # NEW RULE: Dimension Smart-Check (A x B)
+    # If two unequal dimensions are found around an 'x', it is a rectangle.
+    dim_match = re.search(r'([\d.]+)\s*(?:inch|feet|mm|cm)?\s*[xX*]\s*([\d.]+)', t)
+    if dim_match:
+        try:
+            dim1 = float(dim_match.group(1))
+            dim2 = float(dim_match.group(2))
+            if dim1 != dim2:
+                # Override sq/square to rectangle since dimensions are unequal
+                t = re.sub(r'\b(sq|square)\b', 'rectangle', t)
+        except ValueError:
+            pass
     
     # 2. Parameter Rules (with flexible spaces/hyphens)
     t = re.sub(r'\bred\b', 'maroon', t)
@@ -82,13 +95,15 @@ def normalize_text(text):
     t = re.sub(r'\bfibre[\s-]+corrugated[\s-]+sheet\b', 'fibre jasta', t)
     
     # 3. Any-Order Combinations (Extracts words to prevent self-deletion, then appends)
-    # Rule 6: MS + SQ/SQUARE + PIPE
-    if re.search(r'\bms\b', t) and re.search(r'\b(sq|square)\b', t) and re.search(r'\bpipe\b', t):
+    # Rule 6: MS + SQ/SQUARE/RECTANGLE + PIPE
+    if re.search(r'\bms\b', t) and re.search(r'\b(sq|square|rectangle)\b', t) and re.search(r'\bpipe\b', t):
+        is_rect = bool(re.search(r'\brectangle\b', t))
         t = re.sub(r'\bms\b', '', t)
         t = re.sub(r'\bsq\b', '', t)
         t = re.sub(r'\bsquare\b', '', t)
+        t = re.sub(r'\brectangle\b', '', t)
         t = re.sub(r'\bpipe\b', '', t)
-        t += ' square pipe'
+        t += ' rectangle pipe' if is_rect else ' square pipe'
         
     # Rule 2: MS + ROUND + PIPE
     elif re.search(r'\bms\b', t) and re.search(r'\bround\b', t) and re.search(r'\bpipe\b', t):
@@ -129,6 +144,7 @@ def find_best_match(description):
         "square rod", 
         "plain rod", 
         "square pipe", 
+        "rectangle pipe",  # <-- Added Rectangle isolation
         "fibre jasta", 
         "black pipe", 
         "hulas"
