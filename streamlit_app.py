@@ -76,6 +76,9 @@ def normalize_text(text):
     t = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), t)
     t = t.replace('"', ' inch ').replace("'", ' feet ')
     
+    # Standardize 'ft' or 'foot' to 'feet' (e.g., 6ft -> 6 feet)
+    t = re.sub(r'\b(\d+(?:\.\d+)?)\s*(?:ft|foot)\b', r'\1 feet ', t)
+    
     # Convert number followed by # to gauge (e.g., 18# -> 18 gauge)
     t = re.sub(r'([\d.]+)\s*#', r'\1 gauge ', t)
     
@@ -88,14 +91,12 @@ def normalize_text(text):
     t = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', t)
     
     # Dimension Smart-Check (A x B)
-    # If two unequal dimensions are found around an 'x', it is a rectangle.
     dim_match = re.search(r'([\d.]+)\s*(?:inch|feet|mm|cm)?\s*[xX*]\s*([\d.]+)', t)
     if dim_match:
         try:
             dim1 = float(dim_match.group(1))
             dim2 = float(dim_match.group(2))
             if dim1 != dim2:
-                # Override sq/square to rectangle since dimensions are unequal
                 t = re.sub(r'\b(sq|square)\b', 'rectangle', t)
         except ValueError:
             pass
@@ -104,10 +105,11 @@ def normalize_text(text):
     t = re.sub(r'\bred\b', 'maroon', t)
     t = re.sub(r'\bms[\s]+(sq|square)[\s]+rod\b', 'square rod', t)
     t = re.sub(r'\bms[\s]+plain[\s]+rod\b', 'plain rod', t)
-    t = re.sub(r'\bfibre[\s]+corrugated[\s]+sheet\b', 'fibre jasta', t)
+    
+    # NEW CORRUGATED RULE: ONLY catch "fibre corrugated" (leave metal corrugated alone)
+    t = re.sub(r'\bfibre[\s]+corrugated(?:[\s]+sheet)?\b', 'fibre jasta', t)
     
     # 3. Any-Order Combinations
-    # Rule 6: MS + SQ/SQUARE/RECTANGLE + PIPE
     if re.search(r'\bms\b', t) and re.search(r'\b(sq|square|rectangle)\b', t) and re.search(r'\bpipe\b', t):
         is_rect = bool(re.search(r'\brectangle\b', t))
         t = re.sub(r'\bms\b', '', t)
@@ -117,17 +119,15 @@ def normalize_text(text):
         t = re.sub(r'\bpipe\b', '', t)
         t += ' rectangle pipe' if is_rect else ' square pipe'
         
-    # Rule 2: MS + ROUND + PIPE
     elif re.search(r'\bms\b', t) and re.search(r'\bround\b', t) and re.search(r'\bpipe\b', t):
         t = re.sub(r'\bms\b', '', t)
         t = re.sub(r'\bround\b', '', t)
         t = re.sub(r'\bpipe\b', '', t)
         t += ' black pipe'
         
-    # Clean up any messy spacing left behind
     return " ".join(t.split())
 
-# --- REWORKED AI LOGIC WITH DYNAMIC CODE MAPPING KEYWORDS ---
+# --- REWORKED AI LOGIC WITH DUAL-NORMALIZATION ---
 def find_best_match(description, mapped_keywords=""):
     debug_log = {"Original": str(description)}
     
@@ -150,7 +150,7 @@ def find_best_match(description, mapped_keywords=""):
             "val": v
         })
 
-    # 4. STATIC STRICT ISOLATION FILTERS
+    # 4. STATIC STRICT ISOLATION FILTERS (Added Jagadamba)
     strict_keywords = [
         "maroon", 
         "square rod", 
@@ -159,8 +159,16 @@ def find_best_match(description, mapped_keywords=""):
         "rectangle pipe",
         "fibre jasta", 
         "black pipe", 
-        "hulas"
+        "hulas",
+        "jagadamba"
     ]
+    
+    # --- NEW RULE: STRICT LENGTH LOCK FOR ALL CORRUGATED SHEETS ---
+    if 'jasta' in desc_clean or 'corrugated' in desc_clean:
+        length_match = re.search(r'\b(\d+(?:\.\d+)?)\s*feet\b', desc_clean)
+        if length_match:
+            # Dynamically add the specific length (e.g., "6 feet") to the strict locks
+            strict_keywords.append(f"{length_match.group(1)} feet")
     
     triggered_locks = []
     for kw in strict_keywords:
@@ -171,21 +179,18 @@ def find_best_match(description, mapped_keywords=""):
         # Apply the static lock
         candidates = [c for c in candidates if bool(re.search(rf'\b{kw}\b', c["norm_key"])) == has_kw]
 
-    # --- NEW: DYNAMIC MAPPED KEYWORDS (ACT AS STRICT KEYWORDS) ---
+    # 4b. DYNAMIC MAPPED KEYWORDS
     if mapped_keywords:
         norm_kw = normalize_text(mapped_keywords)
-        # Split into words, ignoring single characters
         kw_list = [w for w in norm_kw.split() if len(w) > 1]
         
         for kw in kw_list:
             filtered_candidates = []
             for c in candidates:
                 c_words = c["norm_key"].split()
-                # Keyword must be present or a very close fuzzy match
                 if kw in c_words or get_close_matches(kw, c_words, n=1, cutoff=0.8):
                     filtered_candidates.append(c)
             
-            # Safety catch: only apply dynamic lock if it doesn't eliminate all candidates
             if filtered_candidates:
                 candidates = filtered_candidates
                 triggered_locks.append(f"MAP:{kw}")
@@ -327,7 +332,7 @@ with tab1:
                     st.cache_data.clear()
                     st.success(f"✅ Saved! Added {final_stock} {s_unit} to inventory under Bill: {bill_number}")
 
-# --- TAB 2: VIEW INVENTORY & Ledger ---
+# --- TAB 2: VIEW INVENTORY & LEDGER ---
 with tab2:
     st.header("Live Stock Levels & Ledger")
     
@@ -486,7 +491,6 @@ with tab4:
                     mapping_kw = ""
                     if mapped_name and mapped_name.lower() != 'nan':
                         merged_description = f"{mapped_name} - {other_desc}".strip(" -")
-                        # Only use as a strict mapping keyword if the code actually exists in the code_dict map
                         if raw_item_code in code_dict and str(code_dict[raw_item_code]).strip().lower() != 'nan':
                             mapping_kw = str(code_dict[raw_item_code]).strip()
                     else:
