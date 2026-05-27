@@ -67,73 +67,78 @@ stock_items_lower = {str(item).lower(): item for item in stock_items}
 def normalize_text(text):
     t = str(text).strip().lower()
     
-    # 0. Common Master DB Typos & Spell Checks
-    t = re.sub(r'\bsqaure\b', 'square', t)
-    t = re.sub(r'\brect\b', 'rectangle', t)
-    t = re.sub(r'\b(?:jagdamba|jgadamba|jagamba|jagadamb)\b', 'jagadamba', t)
-    
-    # 1. Punctuation Splitting (CRITICAL: Do this BEFORE decimal formatting)
-    # Fix things like "SQ.14" -> "SQ 14" without breaking valid decimals
+    # 0. Common Master DB Typos & Hardware Abbreviations
+    replacements = {
+        'sqaure': 'square', 'squre': 'square', 'rect': 'rectangle',
+        'jagdamba': 'jagadamba', 'jgadamba': 'jagadamba', 'jagamba': 'jagadamba', 'jagadamb': 'jagadamba',
+        'h.r.': 'hr', 'h.r': 'hr',
+        'c.r.': 'cr', 'c.r': 'cr',
+        'g.i.': 'gi', 'g.i': 'gi',
+        'c.g.i.': 'cgi', 'c.g.i': 'cgi',
+        'c.c.': 'cc', 'c.c': 'cc'
+    }
+    for k, v in replacements.items():
+        t = t.replace(k, v)
+        
+    # 1. Punctuation Splitting (Fix "SQ.14" -> "SQ 14" safely before decimals)
     t = re.sub(r'([a-zA-Z])\.(\d)', r'\1 \2', t)
     t = re.sub(r'(\d)\.([a-zA-Z])', r'\1 \2', t)
     
     # 2. Leading Zero Decimals (Safely catch .46 -> 0.46)
     t = re.sub(r'(^|\s)\.(\d+)', r'\g<1>0.\2', t)
     
-    # 3. Fractions, Quotes, and Symbols
+    # 3. Fractions & Symbols
     t = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), t)
     t = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), t)
     t = t.replace('"', ' inch ').replace("'", ' feet ').replace('`', ' feet ')
     
-    # Standardize 'ft' or 'foot' to 'feet'
     t = re.sub(r'\b(\d+(?:\.\d+)?)\s*(?:ft|foot)\b', r'\1 feet ', t)
-    
-    # Convert number followed by # or standalone 'g' to gauge
     t = re.sub(r'([\d.]+)\s*#', r'\1gauge ', t)
     t = re.sub(r'\b([\d.]+)\s*g\b', r'\1gauge ', t)
     
-    # Remove hyphens and completely stray periods
     t = t.replace('-', ' ')
     t = re.sub(r'(?<!\d)\.|\.(?!\d)', ' ', t)
     
-    # 4. Separate attached letters and numbers (EXCLUDING 'x' for dimensions)
-    # This prevents '25x25' from becoming '25 x 25'
+    # Separate attached letters and numbers generally (exclude 'x' handled below)
     t = re.sub(r'([a-wyzA-WYZ])(\d)', r'\1 \2', t)
     t = re.sub(r'(\d)([a-wyzA-WYZ])', r'\1 \2', t)
     
-    # 5. Compress Dimensions (e.g., "25 x 25 x 3" -> "25x25x3")
-    # This prevents the AI from falsely matching items just because they share an "x" and a "3"
-    t = re.sub(r'(?<=\d)\s*x\s*(?=\d)', 'x', t)
+    # 4. Sheet Dimension Shorthands (4x8x18gauge -> 4 feet x 8 feet 18gauge)
+    t = re.sub(r'\b(\d+)\s*[xX*]\s*(\d+)\s*[xX*]\s*([\d.]+)\s*gauge\b', r'\1 feet x \2 feet \3gauge ', t)
     
-    # Re-attach thickness units so there is NO SPACE
+    # Compress standard dimensions (25 x 25 x 3 -> 25x25x3)
+    t = re.sub(r'(?<=\d)\s*[xX*]\s*(?=\d)', 'x', t)
+    
+    # Equal Angle compression: (25x25x3 -> 25x3)
+    t = re.sub(r'\b(\d+(?:\.\d+)?)x\1x([\d.]+)\b', r'\1x\2', t)
+    
+    # Sheet 2-part shorthand (4x8 -> 4 feet x 8 feet)
+    if any(w in t for w in ['sheet', 'plate', 'jasta', 'corrugated']):
+        t = re.sub(r'\b(\d+)x(\d+)\b', r'\1 feet x \2 feet', t)
+    
+    # Re-attach thickness units so there is NO SPACE (14 gauge -> 14gauge)
     t = re.sub(r'([\d.]+)\s+(mm|gauge)\b', r'\1\2', t)
     
-    # 6. Dimension Smart-Check (A x B)
+    # 5. Smart Checks
     dim_match = re.search(r'([\d.]+)\s*(?:inch|feet|mm|cm)?\s*x\s*([\d.]+)', t)
     if dim_match:
         try:
-            dim1 = float(dim_match.group(1))
-            dim2 = float(dim_match.group(2))
-            if dim1 != dim2:
+            if float(dim_match.group(1)) != float(dim_match.group(2)):
                 t = re.sub(r'\b(sq|square)\b', 'rectangle', t)
         except ValueError:
             pass
             
-    # 7. Parameter Rules
+    # 6. Parameter Rules
     t = re.sub(r'\bred\b', 'maroon', t)
     t = re.sub(r'\bms[\s]+(sq|square)[\s]+rod\b', 'square rod', t)
     t = re.sub(r'\bms[\s]+plain[\s]+rod\b', 'plain rod', t)
-    
-    # CORRUGATED RULE
     t = re.sub(r'\bfibre[\s]+corrugated(?:[\s]+sheet)?\b', 'fibre jasta', t)
     
-    # 8. Any-Order Combinations
+    # 7. Any-Order Combinations
     if re.search(r'\bms\b', t) and re.search(r'\b(sq|square|rectangle)\b', t) and re.search(r'\bpipe\b', t):
         is_rect = bool(re.search(r'\brectangle\b', t))
         t = re.sub(r'\bms\b', '', t)
-        t = re.sub(r'\bsq\b', '', t)
-        t = re.sub(r'\bsquare\b', '', t)
-        t = re.sub(r'\brectangle\b', '', t)
+        t = re.sub(r'\b(sq|square|rectangle)\b', '', t)
         t = re.sub(r'\bpipe\b', '', t)
         t += ' rectangle pipe' if is_rect else ' square pipe'
         
@@ -168,57 +173,56 @@ def find_best_match(description, mapped_keywords=""):
             "val": v
         })
 
-    # 4. STATIC STRICT ISOLATION FILTERS
-    strict_keywords = [
-        "maroon", 
-        "square rod", 
-        "plain rod", 
-        "square pipe", 
-        "rectangle pipe",
-        "fibre jasta", 
-        "black pipe", 
-        "hulas",
-        "jagadamba"
-    ]
-    
-    # --- STRICT ROOFING LOCKS (LENGTH & NO-SPACE THICKNESS) ---
-    if 'jasta' in desc_clean or 'corrugated' in desc_clean:
-        length_match = re.search(r'\b(\d+(?:\.\d+)?)\s*feet\b', desc_clean)
-        if length_match:
-            strict_keywords.append(f"{length_match.group(1)} feet")
-            
-        if 'fibre' not in desc_clean:
-            # Check for mm (no space)
-            mm_match = re.search(r'\b(\d+(?:\.\d+)?)mm\b', desc_clean)
-            if mm_match:
-                strict_keywords.append(f"{mm_match.group(1)}mm")
-                
-            # Check for gauge (no space)
-            gauge_match = re.search(r'\b(\d+(?:\.\d+)?)gauge\b', desc_clean)
-            if gauge_match:
-                strict_keywords.append(f"{gauge_match.group(1)}gauge")
-    
     triggered_locks = []
-    for kw in strict_keywords:
-        has_kw = bool(re.search(rf'\b{kw}\b', desc_clean))
-        if has_kw:
-            triggered_locks.append(kw)
-        
-        # Apply the static lock
-        candidates = [c for c in candidates if bool(re.search(rf'\b{kw}\b', c["norm_key"])) == has_kw]
 
-    # 4b. DYNAMIC MAPPED KEYWORDS
+    # 4A. ISOLATION LOCKS (Boolean match required)
+    isolation_keywords = ["maroon", "square rod", "plain rod", "square pipe", "rectangle pipe", "fibre jasta", "black pipe", "hulas", "jagadamba"]
+    for kw in isolation_keywords:
+        has_kw = bool(re.search(rf'\b{kw}\b', desc_clean))
+        filtered = [c for c in candidates if bool(re.search(rf'\b{kw}\b', c["norm_key"])) == has_kw]
+        if filtered:
+            candidates = filtered
+            if has_kw: triggered_locks.append(f"ISO:{kw}")
+        else:
+            if has_kw: triggered_locks.append(f"ISO:{kw}(Bypassed)")
+
+    # 4B. POSITIVE LOCKS (If in input, MUST be in candidate)
+    positive_locks = []
+    
+    # Extract dimensions
+    dims = re.findall(r'\b\d+(?:\.\d+)?x\d+(?:\.\d+)?(?:x\d+(?:\.\d+)?)?\b', desc_clean)
+    positive_locks.extend(dims)
+    
+    # Extract Feet 
+    feet_matches = re.findall(r'\b\d+(?:\.\d+)?\s*feet\b', desc_clean)
+    positive_locks.extend(feet_matches)
+            
+    # Extract Thickness
+    mm_matches = re.findall(r'\b\d+(?:\.\d+)?mm\b', desc_clean)
+    positive_locks.extend(mm_matches)
+    
+    gauge_matches = re.findall(r'\b\d+(?:\.\d+)?gauge\b', desc_clean)
+    positive_locks.extend(gauge_matches)
+    
+    # Apply Positive Locks Safely
+    for kw in positive_locks:
+        filtered = [c for c in candidates if bool(re.search(rf'\b{kw}\b', c["norm_key"]))]
+        if filtered:
+            candidates = filtered
+            triggered_locks.append(f"REQ:{kw}")
+        else:
+            triggered_locks.append(f"REQ:{kw}(Bypassed)")
+
+    # 4C. DYNAMIC MAPPED KEYWORDS
     if mapped_keywords:
         norm_kw = normalize_text(mapped_keywords)
         kw_list = [w for w in norm_kw.split() if len(w) > 1]
-        
         for kw in kw_list:
             filtered_candidates = []
             for c in candidates:
                 c_words = c["norm_key"].split()
                 if kw in c_words or get_close_matches(kw, c_words, n=1, cutoff=0.8):
                     filtered_candidates.append(c)
-            
             if filtered_candidates:
                 candidates = filtered_candidates
                 triggered_locks.append(f"MAP:{kw}")
