@@ -70,13 +70,17 @@ def normalize_text(text):
     # 0. Common Master DB Typos & Spell Checks
     t = re.sub(r'\bsqaure\b', 'square', t)
     t = re.sub(r'\brect\b', 'rectangle', t)
-    # NEW: Catch common misspellings of Jagadamba
     t = re.sub(r'\b(?:jagdamba|jgadamba|jagamba|jagadamb)\b', 'jagadamba', t)
+    
+    # Standardize decimals without leading zeros (e.g. .46 -> 0.46)
+    t = re.sub(r'(?<!\d)\.(\d+)', r'0.\1', t)
     
     # 1. Fractions, Quotes, and Symbols
     t = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), t)
     t = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), t)
-    t = t.replace('"', ' inch ').replace("'", ' feet ')
+    
+    # NEW: Catch backticks (`) which are often mistyped instead of single quotes (')
+    t = t.replace('"', ' inch ').replace("'", ' feet ').replace('`', ' feet ')
     
     # Standardize 'ft' or 'foot' to 'feet' (e.g., 6ft -> 6 feet)
     t = re.sub(r'\b(\d+(?:\.\d+)?)\s*(?:ft|foot)\b', r'\1 feet ', t)
@@ -93,7 +97,7 @@ def normalize_text(text):
     t = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', t)
     t = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', t)
     
-    # NEW: Re-attach thickness units so there is NO SPACE (e.g., "14 gauge" -> "14gauge", "0.47 mm" -> "0.47mm")
+    # Re-attach thickness units so there is NO SPACE (e.g., "14 gauge" -> "14gauge", "0.47 mm" -> "0.47mm")
     t = re.sub(r'([\d.]+)\s+(mm|gauge)\b', r'\1\2', t)
     
     # Dimension Smart-Check (A x B)
