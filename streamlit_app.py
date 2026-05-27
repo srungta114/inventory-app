@@ -67,9 +67,11 @@ stock_items_lower = {str(item).lower(): item for item in stock_items}
 def normalize_text(text):
     t = str(text).strip().lower()
     
-    # 0. Common Master DB Typos & Abbreviations
+    # 0. Common Master DB Typos & Spell Checks
     t = re.sub(r'\bsqaure\b', 'square', t)
     t = re.sub(r'\brect\b', 'rectangle', t)
+    # NEW: Catch common misspellings of Jagadamba
+    t = re.sub(r'\b(?:jagdamba|jgadamba|jagamba|jagadamb)\b', 'jagadamba', t)
     
     # 1. Fractions, Quotes, and Symbols
     t = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), t)
@@ -79,17 +81,20 @@ def normalize_text(text):
     # Standardize 'ft' or 'foot' to 'feet' (e.g., 6ft -> 6 feet)
     t = re.sub(r'\b(\d+(?:\.\d+)?)\s*(?:ft|foot)\b', r'\1 feet ', t)
     
-    # Convert number followed by # or standalone 'g' to gauge (e.g., 18# -> 18 gauge, 24 g -> 24 gauge)
-    t = re.sub(r'([\d.]+)\s*#', r'\1 gauge ', t)
-    t = re.sub(r'\b([\d.]+)\s*g\b', r'\1 gauge ', t)
+    # Convert number followed by # or standalone 'g' to gauge
+    t = re.sub(r'([\d.]+)\s*#', r'\1gauge', t)
+    t = re.sub(r'\b([\d.]+)\s*g\b', r'\1gauge', t)
     
-    # Remove hyphens and non-decimal periods to prevent words merging (e.g., "SQ.14" -> "SQ 14")
+    # Remove hyphens and non-decimal periods to prevent words merging
     t = t.replace('-', ' ')
     t = re.sub(r'(?<!\d)\.|\.(?!\d)', ' ', t)
     
-    # Separate attached letters and numbers (e.g., "inchsq" -> "inch sq", "14gauge" -> "14 gauge")
+    # Separate attached letters and numbers generally
     t = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', t)
     t = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', t)
+    
+    # NEW: Re-attach thickness units so there is NO SPACE (e.g., "14 gauge" -> "14gauge", "0.47 mm" -> "0.47mm")
+    t = re.sub(r'([\d.]+)\s+(mm|gauge)\b', r'\1\2', t)
     
     # Dimension Smart-Check (A x B)
     dim_match = re.search(r'([\d.]+)\s*(?:inch|feet|mm|cm)?\s*[xX*]\s*([\d.]+)', t)
@@ -107,7 +112,7 @@ def normalize_text(text):
     t = re.sub(r'\bms[\s]+(sq|square)[\s]+rod\b', 'square rod', t)
     t = re.sub(r'\bms[\s]+plain[\s]+rod\b', 'plain rod', t)
     
-    # CORRUGATED RULE: ONLY catch "fibre corrugated" (leave metal corrugated alone)
+    # CORRUGATED RULE
     t = re.sub(r'\bfibre[\s]+corrugated(?:[\s]+sheet)?\b', 'fibre jasta', t)
     
     # 3. Any-Order Combinations
@@ -151,7 +156,7 @@ def find_best_match(description, mapped_keywords=""):
             "val": v
         })
 
-    # 4. STATIC STRICT ISOLATION FILTERS (Added Jagadamba)
+    # 4. STATIC STRICT ISOLATION FILTERS
     strict_keywords = [
         "maroon", 
         "square rod", 
@@ -164,24 +169,22 @@ def find_best_match(description, mapped_keywords=""):
         "jagadamba"
     ]
     
-    # --- NEW RULE: STRICT ROOFING LOCKS (LENGTH & THICKNESS) ---
+    # --- STRICT ROOFING LOCKS (LENGTH & NO-SPACE THICKNESS) ---
     if 'jasta' in desc_clean or 'corrugated' in desc_clean:
-        # A. Length Lock (Applies to ALL roofing sheets)
         length_match = re.search(r'\b(\d+(?:\.\d+)?)\s*feet\b', desc_clean)
         if length_match:
             strict_keywords.append(f"{length_match.group(1)} feet")
             
-        # B. Thickness Lock (Applies to METAL only - ignored if fibre)
         if 'fibre' not in desc_clean:
-            # Check for mm
-            mm_match = re.search(r'\b(\d+(?:\.\d+)?)\s*mm\b', desc_clean)
+            # Check for mm (no space)
+            mm_match = re.search(r'\b(\d+(?:\.\d+)?)mm\b', desc_clean)
             if mm_match:
-                strict_keywords.append(f"{mm_match.group(1)} mm")
+                strict_keywords.append(f"{mm_match.group(1)}mm")
                 
-            # Check for gauge
-            gauge_match = re.search(r'\b(\d+(?:\.\d+)?)\s*gauge\b', desc_clean)
+            # Check for gauge (no space)
+            gauge_match = re.search(r'\b(\d+(?:\.\d+)?)gauge\b', desc_clean)
             if gauge_match:
-                strict_keywords.append(f"{gauge_match.group(1)} gauge")
+                strict_keywords.append(f"{gauge_match.group(1)}gauge")
     
     triggered_locks = []
     for kw in strict_keywords:
@@ -483,7 +486,7 @@ with tab4:
                 for index, row in df_to_process.iterrows():
                     date_val = row[0]
                     bill_val = str(row[1]).strip()
-                    qty_val = float(row[2])
+                    qty_val = float(row[2]) if pd.notna(row[2]) else 0.0
                     
                     sales_unit = str(row[9]).strip() if len(row) > 9 and pd.notna(row[9]) else ""
                     raw_item_code = str(row[4]).strip() if len(row) > 4 and pd.notna(row[4]) else ""
@@ -500,7 +503,7 @@ with tab4:
                     else:
                         unit_check = f"{sales_unit}" if sales_unit else f"{sku_unit}"
                     
-                    # --- DYNAMIC MAPPING KEYWORDS LOGIC ---
+                    # DYNAMIC MAPPING KEYWORDS LOGIC
                     mapping_kw = ""
                     if mapped_name and mapped_name.lower() != 'nan':
                         merged_description = f"{mapped_name} - {other_desc}".strip(" -")
@@ -508,7 +511,27 @@ with tab4:
                             mapping_kw = str(code_dict[raw_item_code]).strip()
                     else:
                         merged_description = other_desc
+                        
+                    # --- NEW: CANCELLED BILLS ENGINE ---
+                    is_blank_date = pd.isna(date_val) or str(date_val).strip() == "" or str(date_val).strip().lower() in ['nan', 'nat', 'none']
+                    if is_blank_date and 'cancel' in merged_description.lower():
+                        auto_matched_records.append({
+                            "Date": datetime.now().strftime("%d/%m/%Y"), 
+                            "Bill Number": bill_val, 
+                            "Group": "Cancelled", 
+                            "Item_Name": "Cancelled Bill",
+                            "Purchase Qty": 0, 
+                            "Purchase Unit": "-", 
+                            "Stock Qty Added": 0, 
+                            "Stock Unit": "-", 
+                            "Original Billed Data": merged_description,
+                            "Unit Check": "🚫", 
+                            "AI Reasoning": "🟢 Cancelled Bill Detected", 
+                            "Display_Desc": merged_description
+                        })
+                        continue # Skip search engine entirely
                     
+                    # Standard Matching
                     matched_item, debug_log = find_best_match(merged_description, mapped_keywords=mapping_kw)
                     debug_str = format_debug_string(debug_log)
                     
@@ -607,13 +630,16 @@ with tab4:
 
                     st.write("✏️ **Review and override any incorrect automatic matches below:**")
                     
+                    # Allow "Cancelled Bill" as a valid dropdown choice
+                    extended_stock_items = ["Cancelled Bill"] + stock_items
+                    
                     edited_auto_df = st.data_editor(
                         display_df,
                         column_config={
                             "Item_Name": st.column_config.SelectboxColumn(
                                 "Item_Name (Editable)",
                                 help="Select the correct master product to override the AI",
-                                options=stock_items,
+                                options=extended_stock_items,
                                 required=True
                             ),
                             "AI Reasoning": st.column_config.TextColumn("AI Reasoning", width="large")
@@ -638,6 +664,8 @@ with tab4:
                         h6.write("**Match to Master Product**")
                         st.divider()
                         
+                        extended_stock_items = ["-- Skip / Do Not Import --", "Cancelled Bill"] + stock_items
+                        
                         for idx, un_row in enumerate(unmatched):
                             c1, c2, c3, c4, c5, c6 = st.columns([1, 1.5, 0.5, 1, 2.5, 2])
                             with c1: st.write(un_row['Bill Number'])
@@ -646,7 +674,7 @@ with tab4:
                             with c4: st.write(un_row.get('Unit Check', '-'))
                             with c5: st.caption(un_row.get('AI Reasoning', '-'))
                             with c6:
-                                selected = st.selectbox("Match", options=["-- Skip / Do Not Import --"] + stock_items, key=f"un_{idx}", label_visibility="collapsed")
+                                selected = st.selectbox("Match", options=extended_stock_items, key=f"un_{idx}", label_visibility="collapsed")
                             manual_selections.append((un_row, selected))
                             
                         st.write("")
@@ -659,20 +687,29 @@ with tab4:
                                 for idx, row in edited_auto_df.iterrows():
                                     orig_row = auto_matched[idx]
                                     current_item = row['Item_Name']
-                                    item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
                                     
+                                    if current_item == "Cancelled Bill":
+                                        group_val = "Cancelled"
+                                        sales_unit = "-"
+                                        stock_qty_added = 0
+                                    else:
+                                        item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
+                                        group_val = item_details['Group']
+                                        sales_unit = item_details['Sales_Unit']
+                                        stock_qty_added = orig_row['Stock Qty Added']
+                                        
                                     final_records_to_commit.append({
-                                        "Date": orig_row['Date'], 
+                                        "Date": orig_row['Date'] if orig_row['Date'] else datetime.now().strftime("%d/%m/%Y"), 
                                         "Bill Number": orig_row['Bill Number'], 
-                                        "Group": item_details['Group'], 
+                                        "Group": group_val, 
                                         "Item_Name": current_item,
                                         "Purchase Qty": 0, 
                                         "Purchase Unit": "-", 
-                                        "Stock Qty Added": orig_row['Stock Qty Added'], 
-                                        "Stock Unit": item_details['Sales_Unit']
+                                        "Stock Qty Added": stock_qty_added, 
+                                        "Stock Unit": sales_unit
                                     })
                                     
-                                    if current_item != orig_row['Item_Name']:
+                                    if current_item != orig_row['Item_Name'] and current_item != "Cancelled Bill":
                                         new_learned_rules.append({
                                             "Billed_Description": str(orig_row['Display_Desc']).strip().upper(),
                                             "Matched_Item_Name": current_item
@@ -681,22 +718,31 @@ with tab4:
                             # 2. Process Manual matches
                             for un_row, selected_item in manual_selections:
                                 if selected_item != "-- Skip / Do Not Import --":
-                                    item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
-                                    
+                                    if selected_item == "Cancelled Bill":
+                                        group_val = "Cancelled"
+                                        sales_unit = "-"
+                                        stock_qty_added = 0
+                                    else:
+                                        item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
+                                        group_val = item_details['Group']
+                                        sales_unit = item_details['Sales_Unit']
+                                        stock_qty_added = -abs(un_row['Qty'])
+                                        
+                                        # Only learn if it's a real product
+                                        new_learned_rules.append({
+                                            "Billed_Description": str(un_row['Description']).strip().upper(),
+                                            "Matched_Item_Name": selected_item
+                                        })
+                                        
                                     final_records_to_commit.append({
-                                        "Date": un_row['Date'], 
+                                        "Date": un_row['Date'] if un_row['Date'] else datetime.now().strftime("%d/%m/%Y"), 
                                         "Bill Number": un_row['Bill Number'], 
-                                        "Group": item_details['Group'], 
+                                        "Group": group_val, 
                                         "Item_Name": selected_item,
                                         "Purchase Qty": 0, 
                                         "Purchase Unit": "-", 
-                                        "Stock Qty Added": -abs(un_row['Qty']), 
-                                        "Stock Unit": item_details['Sales_Unit']
-                                    })
-                                    
-                                    new_learned_rules.append({
-                                        "Billed_Description": str(un_row['Description']).strip().upper(),
-                                        "Matched_Item_Name": selected_item
+                                        "Stock Qty Added": stock_qty_added, 
+                                        "Stock Unit": sales_unit
                                     })
                             
                             if final_records_to_commit or st.session_state.get("bills_to_delete"):
@@ -711,20 +757,29 @@ with tab4:
                             for idx, row in edited_auto_df.iterrows():
                                 orig_row = auto_matched[idx]
                                 current_item = row['Item_Name']
-                                item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
+                                
+                                if current_item == "Cancelled Bill":
+                                    group_val = "Cancelled"
+                                    sales_unit = "-"
+                                    stock_qty_added = 0
+                                else:
+                                    item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
+                                    group_val = item_details['Group']
+                                    sales_unit = item_details['Sales_Unit']
+                                    stock_qty_added = orig_row['Stock Qty Added']
                                 
                                 final_records_to_commit.append({
-                                    "Date": orig_row['Date'], 
+                                    "Date": orig_row['Date'] if orig_row['Date'] else datetime.now().strftime("%d/%m/%Y"), 
                                     "Bill Number": orig_row['Bill Number'], 
-                                    "Group": item_details['Group'], 
+                                    "Group": group_val, 
                                     "Item_Name": current_item,
                                     "Purchase Qty": 0, 
                                     "Purchase Unit": "-", 
-                                    "Stock Qty Added": orig_row['Stock Qty Added'], 
-                                    "Stock Unit": item_details['Sales_Unit']
+                                    "Stock Qty Added": stock_qty_added, 
+                                    "Stock Unit": sales_unit
                                 })
                                 
-                                if current_item != orig_row['Item_Name']:
+                                if current_item != orig_row['Item_Name'] and current_item != "Cancelled Bill":
                                     new_learned_rules.append({
                                         "Billed_Description": str(orig_row['Display_Desc']).strip().upper(),
                                         "Matched_Item_Name": current_item
