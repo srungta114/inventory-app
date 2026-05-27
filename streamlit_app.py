@@ -72,36 +72,44 @@ def normalize_text(text):
     t = re.sub(r'\brect\b', 'rectangle', t)
     t = re.sub(r'\b(?:jagdamba|jgadamba|jagamba|jagadamb)\b', 'jagadamba', t)
     
-    # Standardize decimals without leading zeros (e.g. .46 -> 0.46)
-    t = re.sub(r'(?<!\d)\.(\d+)', r'0.\1', t)
+    # 1. Punctuation Splitting (CRITICAL: Do this BEFORE decimal formatting)
+    # Fix things like "SQ.14" -> "SQ 14" without breaking valid decimals
+    t = re.sub(r'([a-zA-Z])\.(\d)', r'\1 \2', t)
+    t = re.sub(r'(\d)\.([a-zA-Z])', r'\1 \2', t)
     
-    # 1. Fractions, Quotes, and Symbols
+    # 2. Leading Zero Decimals (Safely catch .46 -> 0.46)
+    t = re.sub(r'(^|\s)\.(\d+)', r'\g<1>0.\2', t)
+    
+    # 3. Fractions, Quotes, and Symbols
     t = re.sub(r'(\d+)\s+(\d+)/(\d+)', lambda m: str(float(m.group(1)) + float(m.group(2))/float(m.group(3))), t)
     t = re.sub(r'(\d+)/(\d+)', lambda m: str(float(m.group(1))/float(m.group(2))), t)
-    
-    # NEW: Catch backticks (`) which are often mistyped instead of single quotes (')
     t = t.replace('"', ' inch ').replace("'", ' feet ').replace('`', ' feet ')
     
-    # Standardize 'ft' or 'foot' to 'feet' (e.g., 6ft -> 6 feet)
+    # Standardize 'ft' or 'foot' to 'feet'
     t = re.sub(r'\b(\d+(?:\.\d+)?)\s*(?:ft|foot)\b', r'\1 feet ', t)
     
     # Convert number followed by # or standalone 'g' to gauge
-    t = re.sub(r'([\d.]+)\s*#', r'\1gauge', t)
-    t = re.sub(r'\b([\d.]+)\s*g\b', r'\1gauge', t)
+    t = re.sub(r'([\d.]+)\s*#', r'\1gauge ', t)
+    t = re.sub(r'\b([\d.]+)\s*g\b', r'\1gauge ', t)
     
-    # Remove hyphens and non-decimal periods to prevent words merging
+    # Remove hyphens and completely stray periods
     t = t.replace('-', ' ')
     t = re.sub(r'(?<!\d)\.|\.(?!\d)', ' ', t)
     
-    # Separate attached letters and numbers generally
-    t = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', t)
-    t = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', t)
+    # 4. Separate attached letters and numbers (EXCLUDING 'x' for dimensions)
+    # This prevents '25x25' from becoming '25 x 25'
+    t = re.sub(r'([a-wyzA-WYZ])(\d)', r'\1 \2', t)
+    t = re.sub(r'(\d)([a-wyzA-WYZ])', r'\1 \2', t)
     
-    # Re-attach thickness units so there is NO SPACE (e.g., "14 gauge" -> "14gauge", "0.47 mm" -> "0.47mm")
+    # 5. Compress Dimensions (e.g., "25 x 25 x 3" -> "25x25x3")
+    # This prevents the AI from falsely matching items just because they share an "x" and a "3"
+    t = re.sub(r'(?<=\d)\s*x\s*(?=\d)', 'x', t)
+    
+    # Re-attach thickness units so there is NO SPACE
     t = re.sub(r'([\d.]+)\s+(mm|gauge)\b', r'\1\2', t)
     
-    # Dimension Smart-Check (A x B)
-    dim_match = re.search(r'([\d.]+)\s*(?:inch|feet|mm|cm)?\s*[xX*]\s*([\d.]+)', t)
+    # 6. Dimension Smart-Check (A x B)
+    dim_match = re.search(r'([\d.]+)\s*(?:inch|feet|mm|cm)?\s*x\s*([\d.]+)', t)
     if dim_match:
         try:
             dim1 = float(dim_match.group(1))
@@ -111,7 +119,7 @@ def normalize_text(text):
         except ValueError:
             pass
             
-    # 2. Parameter Rules
+    # 7. Parameter Rules
     t = re.sub(r'\bred\b', 'maroon', t)
     t = re.sub(r'\bms[\s]+(sq|square)[\s]+rod\b', 'square rod', t)
     t = re.sub(r'\bms[\s]+plain[\s]+rod\b', 'plain rod', t)
@@ -119,7 +127,7 @@ def normalize_text(text):
     # CORRUGATED RULE
     t = re.sub(r'\bfibre[\s]+corrugated(?:[\s]+sheet)?\b', 'fibre jasta', t)
     
-    # 3. Any-Order Combinations
+    # 8. Any-Order Combinations
     if re.search(r'\bms\b', t) and re.search(r'\b(sq|square|rectangle)\b', t) and re.search(r'\bpipe\b', t):
         is_rect = bool(re.search(r'\brectangle\b', t))
         t = re.sub(r'\bms\b', '', t)
@@ -516,7 +524,7 @@ with tab4:
                     else:
                         merged_description = other_desc
                         
-                    # --- NEW: CANCELLED BILLS ENGINE ---
+                    # --- CANCELLED BILLS ENGINE ---
                     is_blank_date = pd.isna(date_val) or str(date_val).strip() == "" or str(date_val).strip().lower() in ['nan', 'nat', 'none']
                     if is_blank_date and 'cancel' in merged_description.lower():
                         auto_matched_records.append({
