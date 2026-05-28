@@ -315,13 +315,22 @@ def format_debug_string(log):
     return res
 
 st.title("📦 Hardware Inventory Management")
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🛒 Record Purchase", "📊 View Inventory", "📋 Masters & AI Memory", "📤 Bulk Upload Sales", "📝 Edit Purchase Bills", "📝 Edit Sales Bills"
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🛒 Single Entry", "📤 Bulk Uploads", "📊 View Inventory", "📋 Masters & AI Memory", "📝 Edit Transactions"
 ])
 
-# --- TAB 1: RECORD PURCHASE ---
+# --- TAB 1: UNIFIED SINGLE ENTRY ---
 with tab1:
-    st.header("Enter New Purchase / Goods Receipt")
+    st.header("Single Transaction Entry")
+    
+    # Transaction Type Selector
+    trans_type = st.radio(
+        "Select Transaction Type", 
+        ["Purchase", "Sales", "Purchase Return", "Sales Return", "Stock Adjustment"], 
+        horizontal=True
+    )
+    st.divider()
+
     items = products_df['Item_Name'].dropna().unique()
     selected_item = st.selectbox("Search and Select Item", options=items, index=None, placeholder="Click here to type...")
 
@@ -331,99 +340,109 @@ with tab1:
         s_unit = item_details['Sales_Unit']
         group = item_details['Group'] 
         
-        with st.form("purchase_form", clear_on_submit=True):
+        with st.form("single_entry_form", clear_on_submit=True):
             st.subheader(f"Selected: {selected_item}")
-            bill_number = st.text_input("Bill / Invoice Number", placeholder="Enter Bill Number...")
             
-            c1, c2 = st.columns(2)
-            with c1:
-                purchase_qty = st.number_input(f"Billed Purchase Qty ({p_unit})", min_value=0.01, step=1.0, value=None)
-            with c2:
-                if p_unit != s_unit:
-                    st.info(f"Conversion: Bought in {p_unit}, Stocked in {s_unit}")
-                    stock_qty = st.number_input(f"Physical Stock Received ({s_unit})", min_value=1.0, step=1.0, value=None)
+            c_date, c_bill = st.columns(2)
+            with c_date:
+                entry_date = st.date_input("Date", value=datetime.now(), format="DD/MM/YYYY")
+            with c_bill:
+                if trans_type == "Stock Adjustment":
+                    bill_number = st.text_input("Reference / Reason (Optional)", placeholder="E.g., Physical Audit, Damage...")
+                    if not bill_number:
+                        bill_number = f"ADJ-{datetime.now().strftime('%Y%m%d%H%M')}"
                 else:
-                    stock_qty = purchase_qty
-                    st.info(f"Units match. Stock added will be exactly the purchase quantity ({s_unit}).")
+                    bill_number = st.text_input("Bill / Invoice Number", placeholder="Enter Bill Number...")
+
+            # Duplicate Bill Checking Logic
+            bill_exists = bill_number and trans_type != "Stock Adjustment" and not purchases_df.empty and bill_number in purchases_df['Bill Number'].astype(str).str.strip().values
+            append_confirm = False
             
+            if bill_exists:
+                st.warning(f"⚠️ Bill Number '{bill_number}' already exists in the database.")
+                append_confirm = st.checkbox("I confirm I want to append this new item to the existing bill.")
+
+            # Dynamic Quantity Inputs based on Transaction Type
+            if trans_type in ["Purchase", "Purchase Return"]:
+                c1, c2 = st.columns(2)
+                with c1:
+                    billed_qty = st.number_input(f"Billed Qty ({p_unit})", min_value=0.01, step=1.0, value=None)
+                with c2:
+                    if p_unit != s_unit:
+                        st.info(f"Conversion: Billed in {p_unit}, Stocked in {s_unit}")
+                        stock_qty = st.number_input(f"Actual Stock Impact ({s_unit})", min_value=0.01, step=1.0, value=None)
+                    else:
+                        stock_qty = billed_qty
+                        st.info(f"Units match. Stock impact will be exactly the billed quantity ({s_unit}).")
+            
+            elif trans_type in ["Sales", "Sales Return"]:
+                billed_qty = st.number_input(f"Billed Qty ({s_unit})", min_value=0.01, step=1.0, value=None)
+                stock_qty = billed_qty
+                
+            elif trans_type == "Stock Adjustment":
+                stock_qty = st.number_input(f"Stock Adjustment Quantity ({s_unit})", step=1.0, value=None, help="Use positive numbers to ADD stock, negative to DEDUCT stock.")
+                billed_qty = 0
+
+            # Form Submission
             if st.form_submit_button("Record Entry", type="primary"):
-                if purchase_qty and (p_unit == s_unit or stock_qty):
-                    final_stock = stock_qty if p_unit != s_unit else purchase_qty
+                # Validations
+                if trans_type == "Stock Adjustment" and (stock_qty is None or stock_qty == 0):
+                    st.error("Please enter a non-zero adjustment quantity.")
+                elif trans_type != "Stock Adjustment" and not bill_number:
+                    st.error("Please enter a Bill Number.")
+                elif trans_type != "Stock Adjustment" and not billed_qty:
+                    st.error("Please enter the Billed Quantity.")
+                elif bill_exists and not append_confirm:
+                    st.error("Action Blocked: Please check the confirmation box above to append to an existing bill, or enter a unique Bill Number.")
+                else:
+                    # Determine final stock multiplier based on transaction
+                    if trans_type in ["Sales", "Purchase Return"]:
+                        final_stock = -abs(stock_qty)
+                    elif trans_type in ["Purchase", "Sales Return"]:
+                        final_stock = abs(stock_qty)
+                    elif trans_type == "Stock Adjustment":
+                        final_stock = stock_qty  # Takes raw user input (+ or -)
+                        
+                    # Handle Purchase Qty storage logically
+                    pur_qty_val = billed_qty if trans_type in ["Purchase", "Purchase Return"] else 0
+                    pur_unit_val = p_unit if trans_type in ["Purchase", "Purchase Return"] else "-"
+
                     new_record = pd.DataFrame([{
-                        "Date": datetime.now().strftime("%d/%m/%Y"),
+                        "Date": entry_date.strftime("%d/%m/%Y"),
                         "Bill Number": bill_number, 
                         "Group": group,
                         "Item_Name": selected_item,
-                        "Purchase Qty": purchase_qty,
-                        "Purchase Unit": p_unit,
+                        "Purchase Qty": pur_qty_val,
+                        "Purchase Unit": pur_unit_val,
                         "Stock Qty Added": final_stock, 
                         "Stock Unit": s_unit
                     }])
+                    
                     updated_purchases = pd.concat([purchases_df, new_record], ignore_index=True)
                     save_purchases(updated_purchases)
                     st.cache_data.clear()
-                    st.success(f"✅ Saved! Added {final_stock} {s_unit} to inventory under Bill: {bill_number}")
+                    st.success(f"✅ Saved! Stock Impact: {final_stock} {s_unit} under Ref/Bill: {bill_number}")
+                    st.rerun()
 
-# --- TAB 2: VIEW INVENTORY & LEDGER ---
+# --- TAB 2: BULK UPLOADS ---
 with tab2:
-    st.header("Live Stock Levels & Ledger")
+    st.header("Bulk Upload Transactions")
     
-    st.subheader("Stock Summary Report")
-    summary_items = st.multiselect("Select Item(s) to view (Leave blank for all)", options=products_df['Item_Name'].dropna().unique())
+    # Unified Selector for Bulk Type
+    bulk_type = st.radio(
+        "Select Upload Type", 
+        ["Sales", "Purchases", "Purchase Returns", "Sales Returns"], 
+        horizontal=True
+    )
     
-    if not purchases_df.empty:
-        inventory_summary = purchases_df.groupby(['Group', 'Item_Name', 'Stock Unit'])['Stock Qty Added'].sum().reset_index()
-        inventory_summary.rename(columns={'Stock Qty Added': 'Total Stock on Hand'}, inplace=True)
+    # Reset processing state if the user changes the upload type midway
+    if st.session_state.get("bulk_type") != bulk_type:
+        for key in ['auto_matched', 'unmatched', 'processed_file_name', 'raw_upload_data', 'resolving_duplicates', 'df_to_process', 'bills_to_delete', 'committed_file_name']:
+            if key in st.session_state: del st.session_state[key]
+        st.session_state.bulk_type = bulk_type
+        st.rerun()
         
-        if summary_items:
-            inventory_summary = inventory_summary[inventory_summary['Item_Name'].isin(summary_items)]
-            
-        st.dataframe(inventory_summary, use_container_width=True, hide_index=True)
-        
-        st.divider()
-        st.subheader("Item Stock Ledger")
-        ledger_item = st.selectbox("Select a particular item to view its ledger", options=products_df['Item_Name'].dropna().unique(), index=None)
-        
-        if ledger_item:
-            ledger = purchases_df[purchases_df['Item_Name'] == ledger_item].copy()
-            ledger['Date_Parsed'] = pd.to_datetime(ledger['Date'], dayfirst=True, errors='coerce')
-            ledger = ledger.sort_values('Date_Parsed')
-            ledger['Running Balance'] = ledger['Stock Qty Added'].cumsum()
-            
-            st.dataframe(ledger[['Date', 'Bill Number', 'Purchase Qty', 'Stock Qty Added', 'Running Balance']], use_container_width=True, hide_index=True)
-    else:
-        st.write("No inventory data found.")
-
-# --- TAB 3: PRODUCT MASTER & AI MEMORY ---
-with tab3:
-    st.header("Database & AI Memory")
-    
-    st.subheader("1. Base Product Master")
-    st.dataframe(products_df, use_container_width=True, hide_index=True)
-    
-    st.divider()
-    
-    st.subheader("2. AI Learned Mappings (Memory Bank)")
-    st.write("The AI automatically saves rules when you manually match items. It uses these to get smarter over time.")
-    
-    if not learned_df.empty:
-        st.dataframe(learned_df, use_container_width=True, hide_index=True)
-        
-        if st.button("🧹 Optimize & Clean Duplicates from AI Memory"):
-            clean_df = learned_df.copy()
-            clean_df['Billed_Description'] = clean_df['Billed_Description'].astype(str).str.strip().str.upper()
-            clean_df = clean_df.drop_duplicates(subset=["Billed_Description"], keep="last")
-            conn.update(worksheet="Learned_Mappings", data=clean_df)
-            st.cache_data.clear()
-            st.success("✅ AI Memory Optimized! All duplicate formatting variations have been removed.")
-            st.rerun()
-    else:
-        st.info("The AI Memory is currently empty. It will learn when you manually map unmatched items!")
-
-# --- TAB 4: BULK UPLOAD SALES ---
-with tab4:
-    st.header("Upload Sales Data (Deduct from Inventory)")
-    uploaded_file = st.file_uploader("Upload Sales File (No Headers)", type=['csv', 'xlsx'])
+    uploaded_file = st.file_uploader(f"Upload {bulk_type} File (No Headers)", type=['csv', 'xlsx'])
     
     if uploaded_file is not None:
         
@@ -499,6 +518,11 @@ with tab4:
                 auto_matched_records = []
                 unmatched_raw_records = []
                 
+                # Determine multiplier based on bulk upload type
+                qty_multiplier = 1
+                if bulk_type in ["Sales", "Purchase Returns"]:
+                    qty_multiplier = -1
+                
                 for index, row in df_to_process.iterrows():
                     date_val = row[0]
                     bill_val = str(row[1]).strip()
@@ -553,14 +577,19 @@ with tab4:
                     
                     if matched_item:
                         item_details = products_df[products_df['Item_Name'] == matched_item].iloc[0]
+                        
+                        # Store Purchase Qty only if it's a purchase file
+                        pur_qty_val = qty_val if bulk_type in ["Purchases", "Purchase Returns"] else 0
+                        pur_unit_val = item_details['Purchase_Unit'] if bulk_type in ["Purchases", "Purchase Returns"] else "-"
+                        
                         auto_matched_records.append({
                             "Date": date_val,
                             "Bill Number": bill_val, 
                             "Group": item_details['Group'], 
                             "Item_Name": matched_item,
-                            "Purchase Qty": 0, 
-                            "Purchase Unit": "-", 
-                            "Stock Qty Added": -abs(qty_val), 
+                            "Purchase Qty": pur_qty_val, 
+                            "Purchase Unit": pur_unit_val, 
+                            "Stock Qty Added": abs(qty_val) * qty_multiplier, 
                             "Stock Unit": item_details['Sales_Unit'], 
                             "Original Billed Data": merged_description,
                             "Unit Check": unit_check, 
@@ -698,6 +727,10 @@ with tab4:
                             final_records_to_commit = []
                             new_learned_rules = [] 
                             
+                            qty_multiplier = 1
+                            if bulk_type in ["Sales", "Purchase Returns"]:
+                                qty_multiplier = -1
+                            
                             # 1. Process Auto-Matched edits
                             if not edited_auto_df.empty:
                                 for idx, row in edited_auto_df.iterrows():
@@ -708,19 +741,27 @@ with tab4:
                                         group_val = "Cancelled"
                                         sales_unit = "-"
                                         stock_qty_added = 0
+                                        pur_qty = 0
+                                        pur_unit = "-"
                                     else:
                                         item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
                                         group_val = item_details['Group']
                                         sales_unit = item_details['Sales_Unit']
-                                        stock_qty_added = orig_row['Stock Qty Added']
+                                        
+                                        # Recalculate based on original uploaded qty and bulk_type multiplier
+                                        original_qty = float(df_upload[df_upload[1].astype(str).str.strip() == orig_row['Bill Number']].iloc[0][2])
+                                        stock_qty_added = abs(original_qty) * qty_multiplier
+                                        
+                                        pur_qty = abs(original_qty) if bulk_type in ["Purchases", "Purchase Returns"] else 0
+                                        pur_unit = item_details['Purchase_Unit'] if bulk_type in ["Purchases", "Purchase Returns"] else "-"
                                         
                                     final_records_to_commit.append({
                                         "Date": orig_row['Date'] if orig_row['Date'] else datetime.now().strftime("%d/%m/%Y"), 
                                         "Bill Number": orig_row['Bill Number'], 
                                         "Group": group_val, 
                                         "Item_Name": current_item,
-                                        "Purchase Qty": 0, 
-                                        "Purchase Unit": "-", 
+                                        "Purchase Qty": pur_qty, 
+                                        "Purchase Unit": pur_unit, 
                                         "Stock Qty Added": stock_qty_added, 
                                         "Stock Unit": sales_unit
                                     })
@@ -738,11 +779,16 @@ with tab4:
                                         group_val = "Cancelled"
                                         sales_unit = "-"
                                         stock_qty_added = 0
+                                        pur_qty = 0
+                                        pur_unit = "-"
                                     else:
                                         item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
                                         group_val = item_details['Group']
                                         sales_unit = item_details['Sales_Unit']
-                                        stock_qty_added = -abs(un_row['Qty'])
+                                        stock_qty_added = abs(un_row['Qty']) * qty_multiplier
+                                        
+                                        pur_qty = abs(un_row['Qty']) if bulk_type in ["Purchases", "Purchase Returns"] else 0
+                                        pur_unit = item_details['Purchase_Unit'] if bulk_type in ["Purchases", "Purchase Returns"] else "-"
                                         
                                         # Only learn if it's a real product
                                         new_learned_rules.append({
@@ -755,8 +801,8 @@ with tab4:
                                         "Bill Number": un_row['Bill Number'], 
                                         "Group": group_val, 
                                         "Item_Name": selected_item,
-                                        "Purchase Qty": 0, 
-                                        "Purchase Unit": "-", 
+                                        "Purchase Qty": pur_qty, 
+                                        "Purchase Unit": pur_unit, 
                                         "Stock Qty Added": stock_qty_added, 
                                         "Stock Unit": sales_unit
                                     })
@@ -768,6 +814,10 @@ with tab4:
                         final_records_to_commit = []
                         new_learned_rules = []
                         
+                        qty_multiplier = 1
+                        if bulk_type in ["Sales", "Purchase Returns"]:
+                            qty_multiplier = -1
+                        
                         # Process Auto-Matched edits
                         if not edited_auto_df.empty:
                             for idx, row in edited_auto_df.iterrows():
@@ -778,19 +828,24 @@ with tab4:
                                     group_val = "Cancelled"
                                     sales_unit = "-"
                                     stock_qty_added = 0
+                                    pur_qty = 0
+                                    pur_unit = "-"
                                 else:
                                     item_details = products_df[products_df['Item_Name'] == current_item].iloc[0]
                                     group_val = item_details['Group']
                                     sales_unit = item_details['Sales_Unit']
-                                    stock_qty_added = orig_row['Stock Qty Added']
+                                    stock_qty_added = abs(orig_row['Stock Qty Added']) * qty_multiplier
+                                    
+                                    pur_qty = orig_row['Purchase Qty'] if bulk_type in ["Purchases", "Purchase Returns"] else 0
+                                    pur_unit = item_details['Purchase_Unit'] if bulk_type in ["Purchases", "Purchase Returns"] else "-"
                                 
                                 final_records_to_commit.append({
                                     "Date": orig_row['Date'] if orig_row['Date'] else datetime.now().strftime("%d/%m/%Y"), 
                                     "Bill Number": orig_row['Bill Number'], 
                                     "Group": group_val, 
                                     "Item_Name": current_item,
-                                    "Purchase Qty": 0, 
-                                    "Purchase Unit": "-", 
+                                    "Purchase Qty": pur_qty, 
+                                    "Purchase Unit": pur_unit, 
                                     "Stock Qty Added": stock_qty_added, 
                                     "Stock Unit": sales_unit
                                 })
@@ -810,45 +865,88 @@ with tab4:
             if key in st.session_state:
                 del st.session_state[key]
 
-# --- TABS 5 & 6: EDIT PURCHASE / SALES BILLS ---
-def bill_editor(is_purchase, suffix):
-    st.header(f"Edit {'Purchase' if is_purchase else 'Sales'} Bills")
+# --- TAB 3: VIEW INVENTORY & LEDGER ---
+with tab3:
+    st.header("Live Stock Levels & Ledger")
+    
+    st.subheader("Stock Summary Report")
+    summary_items = st.multiselect("Select Item(s) to view (Leave blank for all)", options=products_df['Item_Name'].dropna().unique())
+    
+    if not purchases_df.empty:
+        inventory_summary = purchases_df.groupby(['Group', 'Item_Name', 'Stock Unit'])['Stock Qty Added'].sum().reset_index()
+        inventory_summary.rename(columns={'Stock Qty Added': 'Total Stock on Hand'}, inplace=True)
+        
+        if summary_items:
+            inventory_summary = inventory_summary[inventory_summary['Item_Name'].isin(summary_items)]
+            
+        st.dataframe(inventory_summary, use_container_width=True, hide_index=True)
+        
+        st.divider()
+        st.subheader("Item Stock Ledger")
+        ledger_item = st.selectbox("Select a particular item to view its ledger", options=products_df['Item_Name'].dropna().unique(), index=None)
+        
+        if ledger_item:
+            ledger = purchases_df[purchases_df['Item_Name'] == ledger_item].copy()
+            ledger['Date_Parsed'] = pd.to_datetime(ledger['Date'], dayfirst=True, errors='coerce')
+            ledger = ledger.sort_values('Date_Parsed')
+            ledger['Running Balance'] = ledger['Stock Qty Added'].cumsum()
+            
+            st.dataframe(ledger[['Date', 'Bill Number', 'Purchase Qty', 'Stock Qty Added', 'Running Balance']], use_container_width=True, hide_index=True)
+    else:
+        st.write("No inventory data found.")
+
+# --- TAB 4: PRODUCT MASTER & AI MEMORY ---
+with tab4:
+    st.header("Database & AI Memory")
+    
+    st.subheader("1. Base Product Master")
+    st.dataframe(products_df, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    st.subheader("2. AI Learned Mappings (Memory Bank)")
+    st.write("The AI automatically saves rules when you manually match items. It uses these to get smarter over time.")
+    
+    if not learned_df.empty:
+        st.dataframe(learned_df, use_container_width=True, hide_index=True)
+        
+        if st.button("🧹 Optimize & Clean Duplicates from AI Memory"):
+            clean_df = learned_df.copy()
+            clean_df['Billed_Description'] = clean_df['Billed_Description'].astype(str).str.strip().str.upper()
+            clean_df = clean_df.drop_duplicates(subset=["Billed_Description"], keep="last")
+            conn.update(worksheet="Learned_Mappings", data=clean_df)
+            st.cache_data.clear()
+            st.success("✅ AI Memory Optimized! All duplicate formatting variations have been removed.")
+            st.rerun()
+    else:
+        st.info("The AI Memory is currently empty. It will learn when you manually map unmatched items!")
+
+# --- TAB 5: UNIFIED EDIT TRANSACTIONS ---
+with tab5:
+    st.header("Edit Database Transactions")
     
     if purchases_df.empty:
-        st.info("No records found.")
-        return
-        
-    if is_purchase:
-        df_filtered = purchases_df[pd.to_numeric(purchases_df['Purchase Qty'], errors='coerce') > 0].copy()
+        st.info("No records found in the database.")
     else:
-        df_filtered = purchases_df[pd.to_numeric(purchases_df['Stock Qty Added'], errors='coerce') < 0].copy()
-
-    if df_filtered.empty:
-        st.info(f"No {'purchase' if is_purchase else 'sales'} records found.")
-        return
-
-    df_filtered['Date_Str'] = pd.to_datetime(df_filtered['Date'], dayfirst=True, errors='coerce').dt.strftime('%d/%m/%Y')
-    df_filtered['Bill_Label'] = df_filtered['Bill Number'].astype(str).str.strip() + " (Date: " + df_filtered['Date_Str'].astype(str) + ")"
-    
-    bill_list = sorted(df_filtered['Bill_Label'].dropna().unique())
-    selected_label = st.selectbox(f"Select Bill to Edit", options=bill_list, index=None, key=f"sel_{suffix}")
-
-    if selected_label:
-        bill_data = df_filtered[df_filtered['Bill_Label'] == selected_label].copy()
-        original_indices = bill_data.index
-        display_df = bill_data.drop(columns=['Bill_Label', 'Date_Str'])
+        df_filtered = purchases_df.copy()
+        df_filtered['Date_Str'] = pd.to_datetime(df_filtered['Date'], dayfirst=True, errors='coerce').dt.strftime('%d/%m/%Y')
+        df_filtered['Bill_Label'] = df_filtered['Bill Number'].astype(str).str.strip() + " (Date: " + df_filtered['Date_Str'].astype(str) + ")"
         
-        edited_df = st.data_editor(display_df, key=f"edit_{suffix}", use_container_width=True)
+        bill_list = sorted(df_filtered['Bill_Label'].dropna().unique())
+        selected_label = st.selectbox(f"Search & Select Reference / Bill to Edit", options=bill_list, index=None)
 
-        if st.button("💾 Save Bill Changes", key=f"save_{suffix}", type="primary"):
-            final_df = purchases_df.drop(index=original_indices).copy()
-            final_df = pd.concat([final_df, edited_df], ignore_index=True)
-            save_purchases(final_df)
-            st.cache_data.clear()
-            st.success("✅ Bill updated successfully!")
-            st.rerun()
+        if selected_label:
+            bill_data = df_filtered[df_filtered['Bill_Label'] == selected_label].copy()
+            original_indices = bill_data.index
+            display_df = bill_data.drop(columns=['Bill_Label', 'Date_Str'])
+            
+            st.write("✏️ **Edit quantities or details below:**")
+            edited_df = st.data_editor(display_df, use_container_width=True)
 
-with tab5:
-    bill_editor(is_purchase=True, suffix="pur")
-with tab6:
-    bill_editor(is_purchase=False, suffix="sal")
+            if st.button("💾 Save Transaction Changes", type="primary"):
+                final_df = purchases_df.drop(index=original_indices).copy()
+                final_df = pd.concat([final_df, edited_df], ignore_index=True)
+                save_purchases(final_df)
+                st.cache_data.clear()
+                st.success("✅ Transaction updated successfully!")
+                st.rerun()
