@@ -8,14 +8,60 @@ import io
 
 st.set_page_config(page_title="Hardware Inventory", layout="wide", page_icon="📦")
 
+# --- NEPALI FISCAL YEAR ENGINE (DYNAMIC) ---
+def get_nepali_fiscal_year(date_val):
+    try:
+        if pd.isna(date_val) or str(date_val).strip() == "" or str(date_val).strip().lower() in ['nan', 'nat', 'none']:
+            return "Unknown"
+            
+        if isinstance(date_val, str):
+            d = pd.to_datetime(date_val, format="%d/%m/%Y")
+        else:
+            d = pd.to_datetime(date_val)
+            
+        if pd.isna(d):
+            return "Unknown"
+            
+        year = d.year
+        
+        # Dynamic Mapping: Exact start dates (July) of Shrawan 1 for specific Gregorian years.
+        # This accounts for the fluctuation of Shrawan 1 between July 15, 16, and 17.
+        shrawan_1_dates = {
+            2020: 16,
+            2021: 16,
+            2022: 17,
+            2023: 17,
+            2024: 16,
+            2025: 16,
+            2026: 16,
+            2027: 17,
+            2028: 16,
+            2029: 16,
+            2030: 17
+        }
+        
+        # Default to 16 if the year is not explicitly in our mapping table
+        cutoff_day = shrawan_1_dates.get(year, 16)
+
+        if d.month > 7 or (d.month == 7 and d.day >= cutoff_day):
+            bs_year = year + 57
+        else:
+            bs_year = year + 56
+        
+        return f"FY {bs_year}/{str(bs_year + 1)[-2:]}"
+    except:
+        return "Unknown"
+
 # --- CONNECT TO GOOGLE SHEETS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- HELPER TO FORCE DD/MM/YYYY FORMAT ON SAVES ---
+# --- HELPER TO FORCE FORMATS AND AUTO-CALCULATE FISCAL YEAR ON SAVES ---
 def save_purchases(df_to_save):
     df_save = df_to_save.copy()
     if 'Date' in df_save.columns:
         df_save['Date'] = pd.to_datetime(df_save['Date'], dayfirst=True, errors='coerce').dt.strftime('%d/%m/%Y')
+        # Automatically enforce and generate Nepali Fiscal Year on every database save
+        df_save['Fiscal Year'] = df_save['Date'].apply(get_nepali_fiscal_year)
     conn.update(worksheet="Purchases", data=df_save)
 
 @st.cache_data(ttl=10)
@@ -42,6 +88,11 @@ def get_learned_mappings():
 
 products_df = get_product_master()
 purchases_df = get_purchases()
+
+# Dynamically apply Fiscal Year to active session data if it's an older database version
+if not purchases_df.empty and 'Date' in purchases_df.columns:
+    purchases_df['Fiscal Year'] = purchases_df['Date'].apply(get_nepali_fiscal_year)
+
 mapping_df = get_code_mapping()
 learned_df = get_learned_mappings()
 
@@ -439,6 +490,7 @@ with tab1:
                     for _, row in edited_cart.iterrows():
                         records_to_save.append({
                             "Date": entry_date.strftime("%d/%m/%Y"),
+                            "Fiscal Year": get_nepali_fiscal_year(entry_date.strftime("%d/%m/%Y")),
                             "Bill Number": bill_number,
                             "Group": row["Group"],
                             "Item_Name": row["Item_Name"],
@@ -587,6 +639,7 @@ with tab2:
                     if is_blank_date and 'cancel' in merged_description.lower():
                         auto_matched_records.append({
                             "Date": datetime.now().strftime("%d/%m/%Y"), 
+                            "Fiscal Year": get_nepali_fiscal_year(datetime.now()),
                             "Bill Number": bill_val, 
                             "Group": "Cancelled", 
                             "Item_Name": "Cancelled Bill",
@@ -612,6 +665,7 @@ with tab2:
                         
                         auto_matched_records.append({
                             "Date": date_val,
+                            "Fiscal Year": get_nepali_fiscal_year(date_val),
                             "Bill Number": bill_val, 
                             "Group": item_details['Group'], 
                             "Item_Name": matched_item,
@@ -680,7 +734,7 @@ with tab2:
 
                 if auto_matched:
                     st.success(f"✅ Automatically matched {len(auto_matched)} items.")
-                    display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc', 'Group', 'Purchase Qty', 'Purchase Unit', 'Stock Qty Added', 'Stock Unit'], errors='ignore')
+                    display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc', 'Group', 'Purchase Qty', 'Purchase Unit', 'Stock Qty Added', 'Stock Unit', 'Fiscal Year'], errors='ignore')
                     
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -754,6 +808,7 @@ with tab2:
                                 for idx, row in edited_auto_df.iterrows():
                                     orig_row = auto_matched[idx]
                                     current_item = row['Item_Name']
+                                    date_to_save = orig_row['Date'] if orig_row['Date'] else datetime.now().strftime("%d/%m/%Y")
                                     
                                     if current_item == "Cancelled Bill":
                                         group_val = "Cancelled"
@@ -773,7 +828,8 @@ with tab2:
                                         pur_unit = item_details['Purchase_Unit'] if bulk_type in ["Purchases", "Purchase Returns"] else "-"
                                         
                                     final_records_to_commit.append({
-                                        "Date": orig_row['Date'] if orig_row['Date'] else datetime.now().strftime("%d/%m/%Y"), 
+                                        "Date": date_to_save, 
+                                        "Fiscal Year": get_nepali_fiscal_year(date_to_save),
                                         "Bill Number": orig_row['Bill Number'], 
                                         "Group": group_val, 
                                         "Item_Name": current_item,
@@ -791,6 +847,7 @@ with tab2:
                             
                             for un_row, selected_item in manual_selections:
                                 if selected_item != "-- Skip / Do Not Import --":
+                                    date_to_save = un_row['Date'] if un_row['Date'] else datetime.now().strftime("%d/%m/%Y")
                                     if selected_item == "Cancelled Bill":
                                         group_val = "Cancelled"
                                         sales_unit = "-"
@@ -812,7 +869,8 @@ with tab2:
                                         })
                                         
                                     final_records_to_commit.append({
-                                        "Date": un_row['Date'] if un_row['Date'] else datetime.now().strftime("%d/%m/%Y"), 
+                                        "Date": date_to_save,
+                                        "Fiscal Year": get_nepali_fiscal_year(date_to_save),
                                         "Bill Number": un_row['Bill Number'], 
                                         "Group": group_val, 
                                         "Item_Name": selected_item,
@@ -837,6 +895,7 @@ with tab2:
                             for idx, row in edited_auto_df.iterrows():
                                 orig_row = auto_matched[idx]
                                 current_item = row['Item_Name']
+                                date_to_save = orig_row['Date'] if orig_row['Date'] else datetime.now().strftime("%d/%m/%Y")
                                 
                                 if current_item == "Cancelled Bill":
                                     group_val = "Cancelled"
@@ -854,7 +913,8 @@ with tab2:
                                     pur_unit = item_details['Purchase_Unit'] if bulk_type in ["Purchases", "Purchase Returns"] else "-"
                                 
                                 final_records_to_commit.append({
-                                    "Date": orig_row['Date'] if orig_row['Date'] else datetime.now().strftime("%d/%m/%Y"), 
+                                    "Date": date_to_save,
+                                    "Fiscal Year": get_nepali_fiscal_year(date_to_save),
                                     "Bill Number": orig_row['Bill Number'], 
                                     "Group": group_val, 
                                     "Item_Name": current_item,
@@ -897,15 +957,27 @@ with tab3:
         
         st.divider()
         st.subheader("Item Stock Ledger")
-        ledger_item = st.selectbox("Select a particular item to view its ledger", options=products_df['Item_Name'].dropna().unique(), index=None)
         
+        c1, c2 = st.columns(2)
+        with c1:
+            ledger_item = st.selectbox("Select a particular item to view its ledger", options=products_df['Item_Name'].dropna().unique(), index=None)
+        with c2:
+            fy_options = ["All"] + sorted(purchases_df['Fiscal Year'].dropna().unique().tolist(), reverse=True) if not purchases_df.empty and 'Fiscal Year' in purchases_df.columns else ["All"]
+            selected_fy = st.selectbox("Filter Ledger by Fiscal Year", options=fy_options)
+            
         if ledger_item:
             ledger = purchases_df[purchases_df['Item_Name'] == ledger_item].copy()
             ledger['Date_Parsed'] = pd.to_datetime(ledger['Date'], dayfirst=True, errors='coerce')
             ledger = ledger.sort_values('Date_Parsed')
+            
+            # Run the global cumulative sum FIRST for accounting accuracy
             ledger['Running Balance'] = ledger['Stock Qty Added'].cumsum()
             
-            st.dataframe(ledger[['Date', 'Bill Number', 'Purchase Qty', 'Stock Qty Added', 'Running Balance']], use_container_width=True, hide_index=True)
+            # Then filter the view by Fiscal Year if requested
+            if selected_fy != "All":
+                ledger = ledger[ledger['Fiscal Year'] == selected_fy]
+                
+            st.dataframe(ledger[['Fiscal Year', 'Date', 'Bill Number', 'Purchase Qty', 'Stock Qty Added', 'Running Balance']], use_container_width=True, hide_index=True)
     else:
         st.write("No inventory data found.")
 
@@ -944,7 +1016,10 @@ with tab5:
     else:
         df_filtered = purchases_df.copy()
         df_filtered['Date_Str'] = pd.to_datetime(df_filtered['Date'], dayfirst=True, errors='coerce').dt.strftime('%d/%m/%Y')
-        df_filtered['Bill_Label'] = df_filtered['Bill Number'].astype(str).str.strip() + " (Date: " + df_filtered['Date_Str'].astype(str) + ")"
+        
+        # Add FY to the dropdown label so it's easier to find specific bills
+        fy_col = df_filtered['Fiscal Year'].astype(str) if 'Fiscal Year' in df_filtered.columns else "FY Unknown"
+        df_filtered['Bill_Label'] = fy_col + " | " + df_filtered['Bill Number'].astype(str).str.strip() + " (Date: " + df_filtered['Date_Str'].astype(str) + ")"
         
         bill_list = sorted(df_filtered['Bill_Label'].dropna().unique())
         selected_label = st.selectbox(f"Search & Select Reference / Bill to Edit", options=bill_list, index=None)
@@ -952,7 +1027,11 @@ with tab5:
         if selected_label:
             bill_data = df_filtered[df_filtered['Bill_Label'] == selected_label].copy()
             original_indices = bill_data.index
-            display_df = bill_data.drop(columns=['Bill_Label', 'Date_Str'])
+            
+            # Drop purely visual/temporary columns before passing to the editor
+            cols_to_drop = ['Bill_Label', 'Date_Str']
+            if 'Date_Parsed' in bill_data.columns: cols_to_drop.append('Date_Parsed')
+            display_df = bill_data.drop(columns=cols_to_drop)
             
             st.write("✏️ **Edit quantities or details below:**")
             edited_df = st.data_editor(display_df, use_container_width=True)
