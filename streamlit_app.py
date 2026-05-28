@@ -319,20 +319,44 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🛒 Single Entry", "📤 Bulk Uploads", "📊 View Inventory", "📋 Masters & AI Memory", "📝 Edit Transactions"
 ])
 
-# --- TAB 1: UNIFIED SINGLE ENTRY ---
+# --- TAB 1: SINGLE TRANSACTION ENTRY (WITH CART) ---
 with tab1:
     st.header("Single Transaction Entry")
     
-    # Transaction Type Selector
     trans_type = st.radio(
         "Select Transaction Type", 
         ["Purchase", "Sales", "Purchase Return", "Sales Return", "Stock Adjustment"], 
         horizontal=True
     )
+    
+    if "single_entry_type" not in st.session_state or st.session_state.single_entry_type != trans_type:
+        st.session_state.single_entry_type = trans_type
+        st.session_state.single_entry_cart = []
+        
+    st.divider()
+
+    c_date, c_bill = st.columns(2)
+    with c_date:
+        entry_date = st.date_input("Date", value=datetime.now(), format="DD/MM/YYYY")
+    with c_bill:
+        if trans_type == "Stock Adjustment":
+            bill_number = st.text_input("Reference / Reason (Optional)", placeholder="E.g., Physical Audit, Damage...")
+            if not bill_number:
+                bill_number = f"ADJ-{datetime.now().strftime('%Y%m%d%H%M')}"
+        else:
+            bill_number = st.text_input("Bill / Invoice Number", placeholder="Enter Bill Number...")
+            
+        bill_exists = False
+        override_duplicate = True
+        if bill_number and trans_type != "Stock Adjustment" and not purchases_df.empty and str(bill_number).strip() in purchases_df['Bill Number'].astype(str).str.strip().values:
+            bill_exists = True
+            st.error(f"🚨 Bill Number '{bill_number}' already exists.")
+            override_duplicate = st.checkbox("I intentionally want to APPEND to this existing bill.")
+
     st.divider()
 
     items = products_df['Item_Name'].dropna().unique()
-    selected_item = st.selectbox("Search and Select Item", options=items, index=None, placeholder="Click here to type...")
+    selected_item = st.selectbox("Search and Select Item to Add", options=items, index=None, placeholder="Click here to type...")
 
     if selected_item:
         item_details = products_df[products_df['Item_Name'] == selected_item].iloc[0]
@@ -340,29 +364,12 @@ with tab1:
         s_unit = item_details['Sales_Unit']
         group = item_details['Group'] 
         
-        with st.form("single_entry_form", clear_on_submit=True):
-            st.subheader(f"Selected: {selected_item}")
+        with st.form("add_item_form", clear_on_submit=True):
+            st.subheader(f"Adding: {selected_item}")
             
-            c_date, c_bill = st.columns(2)
-            with c_date:
-                entry_date = st.date_input("Date", value=datetime.now(), format="DD/MM/YYYY")
-            with c_bill:
-                if trans_type == "Stock Adjustment":
-                    bill_number = st.text_input("Reference / Reason (Optional)", placeholder="E.g., Physical Audit, Damage...")
-                    if not bill_number:
-                        bill_number = f"ADJ-{datetime.now().strftime('%Y%m%d%H%M')}"
-                else:
-                    bill_number = st.text_input("Bill / Invoice Number", placeholder="Enter Bill Number...")
-
-            # Duplicate Bill Checking Logic
-            bill_exists = bill_number and trans_type != "Stock Adjustment" and not purchases_df.empty and bill_number in purchases_df['Bill Number'].astype(str).str.strip().values
-            append_confirm = False
+            billed_qty = None
+            stock_qty = None
             
-            if bill_exists:
-                st.warning(f"⚠️ Bill Number '{bill_number}' already exists in the database.")
-                append_confirm = st.checkbox("I confirm I want to append this new item to the existing bill.")
-
-            # Dynamic Quantity Inputs based on Transaction Type
             if trans_type in ["Purchase", "Purchase Return"]:
                 c1, c2 = st.columns(2)
                 with c1:
@@ -382,60 +389,86 @@ with tab1:
             elif trans_type == "Stock Adjustment":
                 stock_qty = st.number_input(f"Stock Adjustment Quantity ({s_unit})", step=1.0, value=None, help="Use positive numbers to ADD stock, negative to DEDUCT stock.")
                 billed_qty = 0
-
-            # Form Submission
-            if st.form_submit_button("Record Entry", type="primary"):
-                # Validations
+            
+            if st.form_submit_button("➕ Add Item to Cart", type="primary"):
                 if trans_type == "Stock Adjustment" and (stock_qty is None or stock_qty == 0):
                     st.error("Please enter a non-zero adjustment quantity.")
-                elif trans_type != "Stock Adjustment" and not bill_number:
-                    st.error("Please enter a Bill Number.")
                 elif trans_type != "Stock Adjustment" and not billed_qty:
                     st.error("Please enter the Billed Quantity.")
-                elif bill_exists and not append_confirm:
-                    st.error("Action Blocked: Please check the confirmation box above to append to an existing bill, or enter a unique Bill Number.")
+                elif trans_type in ["Purchase", "Purchase Return"] and p_unit != s_unit and not stock_qty:
+                    st.error(f"Please enter the Actual Stock Impact in {s_unit}.")
                 else:
-                    # Determine final stock multiplier based on transaction
                     if trans_type in ["Sales", "Purchase Return"]:
                         final_stock = -abs(stock_qty)
                     elif trans_type in ["Purchase", "Sales Return"]:
                         final_stock = abs(stock_qty)
                     elif trans_type == "Stock Adjustment":
-                        final_stock = stock_qty  # Takes raw user input (+ or -)
+                        final_stock = stock_qty  
                         
-                    # Handle Purchase Qty storage logically
                     pur_qty_val = billed_qty if trans_type in ["Purchase", "Purchase Return"] else 0
                     pur_unit_val = p_unit if trans_type in ["Purchase", "Purchase Return"] else "-"
 
-                    new_record = pd.DataFrame([{
-                        "Date": entry_date.strftime("%d/%m/%Y"),
-                        "Bill Number": bill_number, 
-                        "Group": group,
+                    st.session_state.single_entry_cart.append({
                         "Item_Name": selected_item,
+                        "Group": group,
                         "Purchase Qty": pur_qty_val,
                         "Purchase Unit": pur_unit_val,
                         "Stock Qty Added": final_stock, 
                         "Stock Unit": s_unit
-                    }])
-                    
-                    updated_purchases = pd.concat([purchases_df, new_record], ignore_index=True)
-                    save_purchases(updated_purchases)
-                    st.cache_data.clear()
-                    st.success(f"✅ Saved! Stock Impact: {final_stock} {s_unit} under Ref/Bill: {bill_number}")
+                    })
                     st.rerun()
+    
+    if st.session_state.single_entry_cart:
+        st.divider()
+        st.subheader(f"🛒 Items in Current Bill ({len(st.session_state.single_entry_cart)})")
+        
+        cart_df = pd.DataFrame(st.session_state.single_entry_cart)
+        edited_cart = st.data_editor(cart_df, num_rows="dynamic", use_container_width=True, key="cart_editor")
+        
+        c_sub, c_clr = st.columns([2, 1])
+        with c_sub:
+            if st.button("💾 Commit Transaction to Database", type="primary", use_container_width=True):
+                if trans_type != "Stock Adjustment" and not bill_number:
+                    st.error("Please enter a Bill Number at the top.")
+                elif bill_exists and not override_duplicate:
+                    st.error("Duplicate Bill detected. Please check the override box above to proceed.")
+                elif edited_cart.empty:
+                    st.error("Cart is empty.")
+                else:
+                    records_to_save = []
+                    for _, row in edited_cart.iterrows():
+                        records_to_save.append({
+                            "Date": entry_date.strftime("%d/%m/%Y"),
+                            "Bill Number": bill_number,
+                            "Group": row["Group"],
+                            "Item_Name": row["Item_Name"],
+                            "Purchase Qty": row["Purchase Qty"],
+                            "Purchase Unit": row["Purchase Unit"],
+                            "Stock Qty Added": row["Stock Qty Added"],
+                            "Stock Unit": row["Stock Unit"]
+                        })
+                    
+                    updated_purchases = pd.concat([purchases_df, pd.DataFrame(records_to_save)], ignore_index=True)
+                    save_purchases(updated_purchases)
+                    st.session_state.single_entry_cart = []
+                    st.cache_data.clear()
+                    st.success(f"✅ Successfully saved {len(records_to_save)} items under Ref/Bill: {bill_number}")
+                    st.rerun()
+        with c_clr:
+            if st.button("🗑️ Clear Entire Bill", use_container_width=True):
+                st.session_state.single_entry_cart = []
+                st.rerun()
 
 # --- TAB 2: BULK UPLOADS ---
 with tab2:
     st.header("Bulk Upload Transactions")
     
-    # Unified Selector for Bulk Type
     bulk_type = st.radio(
         "Select Upload Type", 
         ["Sales", "Purchases", "Purchase Returns", "Sales Returns"], 
         horizontal=True
     )
     
-    # Reset processing state if the user changes the upload type midway
     if st.session_state.get("bulk_type") != bulk_type:
         for key in ['auto_matched', 'unmatched', 'processed_file_name', 'raw_upload_data', 'resolving_duplicates', 'df_to_process', 'bills_to_delete', 'committed_file_name']:
             if key in st.session_state: del st.session_state[key]
@@ -518,7 +551,6 @@ with tab2:
                 auto_matched_records = []
                 unmatched_raw_records = []
                 
-                # Determine multiplier based on bulk upload type
                 qty_multiplier = 1
                 if bulk_type in ["Sales", "Purchase Returns"]:
                     qty_multiplier = -1
@@ -543,7 +575,6 @@ with tab2:
                     else:
                         unit_check = f"{sales_unit}" if sales_unit else f"{sku_unit}"
                     
-                    # DYNAMIC MAPPING KEYWORDS LOGIC
                     mapping_kw = ""
                     if mapped_name and mapped_name.lower() != 'nan':
                         merged_description = f"{mapped_name} - {other_desc}".strip(" -")
@@ -552,7 +583,6 @@ with tab2:
                     else:
                         merged_description = other_desc
                         
-                    # --- CANCELLED BILLS ENGINE ---
                     is_blank_date = pd.isna(date_val) or str(date_val).strip() == "" or str(date_val).strip().lower() in ['nan', 'nat', 'none']
                     if is_blank_date and 'cancel' in merged_description.lower():
                         auto_matched_records.append({
@@ -569,16 +599,14 @@ with tab2:
                             "AI Reasoning": "🟢 Cancelled Bill Detected", 
                             "Display_Desc": merged_description
                         })
-                        continue # Skip search engine entirely
+                        continue 
                     
-                    # Standard Matching
                     matched_item, debug_log = find_best_match(merged_description, mapped_keywords=mapping_kw)
                     debug_str = format_debug_string(debug_log)
                     
                     if matched_item:
                         item_details = products_df[products_df['Item_Name'] == matched_item].iloc[0]
                         
-                        # Store Purchase Qty only if it's a purchase file
                         pur_qty_val = qty_val if bulk_type in ["Purchases", "Purchase Returns"] else 0
                         pur_unit_val = item_details['Purchase_Unit'] if bulk_type in ["Purchases", "Purchase Returns"] else "-"
                         
@@ -616,9 +644,7 @@ with tab2:
                 auto_matched = st.session_state.auto_matched
                 unmatched = st.session_state.unmatched
                 
-                # --- Unified Safe Commit Function taking processed records ---
                 def commit_sales_to_db(records_to_save, new_learned=None):
-                    # Filter out visual/temporary columns before saving to DB
                     clean_records = [{k: v for k, v in r.items() if k not in ['Display_Desc', 'Original Billed Data', 'Unit Check', 'AI Reasoning']} for r in records_to_save]
                     new_records_df = pd.DataFrame(clean_records)
                     
@@ -652,14 +678,10 @@ with tab2:
                             
                     st.rerun()
 
-                # --- Editable Auto-Matched DataFrame ---
                 if auto_matched:
                     st.success(f"✅ Automatically matched {len(auto_matched)} items.")
-                    
-                    # Drop DB clutter columns so 'AI Reasoning' fits perfectly on screen
                     display_df = pd.DataFrame(auto_matched).drop(columns=['Display_Desc', 'Group', 'Purchase Qty', 'Purchase Unit', 'Stock Qty Added', 'Stock Unit'], errors='ignore')
                     
-                    # --- Download to Excel Feature ---
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                         display_df.to_excel(writer, index=False, sheet_name='Auto_Matched')
@@ -671,11 +693,9 @@ with tab2:
                         file_name=f"AutoMatched_{datetime.now().strftime('%d-%m-%Y')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-                    # --------------------------------------
 
                     st.write("✏️ **Review and override any incorrect automatic matches below:**")
                     
-                    # Allow "Cancelled Bill" as a valid dropdown choice
                     extended_stock_items = ["Cancelled Bill"] + stock_items
                     
                     edited_auto_df = st.data_editor(
@@ -699,7 +719,6 @@ with tab2:
                     st.warning(f"⚠️ {len(unmatched)} items could not be matched automatically.")
                     with st.form("manual_mapping_form"):
                         manual_selections = []
-                        # Stretched layout to fit the new Debug column
                         h1, h2, h3, h4, h5, h6 = st.columns([1, 1.5, 0.5, 1, 2.5, 2])
                         h1.write("**Bill No**")
                         h2.write("**Billed Description**")
@@ -731,7 +750,6 @@ with tab2:
                             if bulk_type in ["Sales", "Purchase Returns"]:
                                 qty_multiplier = -1
                             
-                            # 1. Process Auto-Matched edits
                             if not edited_auto_df.empty:
                                 for idx, row in edited_auto_df.iterrows():
                                     orig_row = auto_matched[idx]
@@ -748,7 +766,6 @@ with tab2:
                                         group_val = item_details['Group']
                                         sales_unit = item_details['Sales_Unit']
                                         
-                                        # Recalculate based on original uploaded qty and bulk_type multiplier
                                         original_qty = float(df_upload[df_upload[1].astype(str).str.strip() == orig_row['Bill Number']].iloc[0][2])
                                         stock_qty_added = abs(original_qty) * qty_multiplier
                                         
@@ -772,7 +789,6 @@ with tab2:
                                             "Matched_Item_Name": current_item
                                         })
                             
-                            # 2. Process Manual matches
                             for un_row, selected_item in manual_selections:
                                 if selected_item != "-- Skip / Do Not Import --":
                                     if selected_item == "Cancelled Bill":
@@ -790,7 +806,6 @@ with tab2:
                                         pur_qty = abs(un_row['Qty']) if bulk_type in ["Purchases", "Purchase Returns"] else 0
                                         pur_unit = item_details['Purchase_Unit'] if bulk_type in ["Purchases", "Purchase Returns"] else "-"
                                         
-                                        # Only learn if it's a real product
                                         new_learned_rules.append({
                                             "Billed_Description": str(un_row['Description']).strip().upper(),
                                             "Matched_Item_Name": selected_item
@@ -818,7 +833,6 @@ with tab2:
                         if bulk_type in ["Sales", "Purchase Returns"]:
                             qty_multiplier = -1
                         
-                        # Process Auto-Matched edits
                         if not edited_auto_df.empty:
                             for idx, row in edited_auto_df.iterrows():
                                 orig_row = auto_matched[idx]
